@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+data/*.csv
+chroma_store/
+.pytest_cache/
+.ipynb_checkpoints/
