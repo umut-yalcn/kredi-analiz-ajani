@@ -1,0 +1,2 @@
+# agentic-aiproject
+ben kazanacağım
