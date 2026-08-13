@@ -213,6 +213,19 @@ def group_aggregate(
             }
         )
 
+    # Metrik tipi de dogrulanmali. group_by dogrulaniyordu ama metric
+    # dogrulanmiyordu; kategorik bir metrikle mean/sum cagrildiginda pandas
+    # ciplak TypeError/ValueError firlatiyor ve bu istisna ajan kosumunu
+    # dusuruyordu. 'count' istisna: her tipte anlamli.
+    if how != "count" and metric not in NUMERIC_COLUMNS:
+        return _ok(
+            {
+                "hata": f"'{metric}' sayisal degil, '{how}' ile toplulastirilamaz. "
+                f"Sayisal kolonlar: {', '.join(NUMERIC_COLUMNS)}. "
+                f"Kategorik bir kolonun dagilimi icin describe_column kullan."
+            }
+        )
+
     df = load_analysis_frame()
     grouped = df.groupby(group_by)[metric]
 
@@ -264,15 +277,35 @@ def segment_stats(column: str, operator: Literal["<", "<=", ">", ">=", "=="], va
     except GuardViolation as exc:
         return _ok({"hata": str(exc)})
 
+    # Kolon tipi ONCE dogrulanir. Aksi halde asagidaki karsilastirma kategorik
+    # bir kolonda ciplak TypeError firlatiyordu ve bu istisna ToolNode
+    # tarafindan yakalanmadigi icin TUM ajan kosumunu dusuruyordu - agent
+    # hatayi gorup plan degistiremeden surec oluyordu. "Istanbul'daki ortalama
+    # gelir nedir?" gibi son derece dogal bir soru bu yola giriyordu.
+    for kol, rol in ((column, "filtre"), (metric, "metrik")):
+        if kol not in NUMERIC_COLUMNS:
+            return _ok(
+                {
+                    "hata": f"'{kol}' sayisal degil, {rol} olarak kullanilamaz. "
+                    f"Sayisal kolonlar: {', '.join(NUMERIC_COLUMNS)}. "
+                    f"Kategorik kolonlarda gruplama icin group_aggregate kullan."
+                }
+            )
+
     df = load_analysis_frame()
-    ops = {
-        "<": df[column] < value,
-        "<=": df[column] <= value,
-        ">": df[column] > value,
-        ">=": df[column] >= value,
-        "==": df[column] == value,
-    }
-    subset = df[ops[operator]]
+    # Karsilastirmalar tembel kurulur; sozluk hepsini birden degerlendirirse
+    # secilmeyen operatorler de calisir.
+    if operator == "<":
+        maske = df[column] < value
+    elif operator == "<=":
+        maske = df[column] <= value
+    elif operator == ">":
+        maske = df[column] > value
+    elif operator == ">=":
+        maske = df[column] >= value
+    else:
+        maske = df[column] == value
+    subset = df[maske]
 
     if subset.empty:
         return _ok({"uyari": "Bu kosula uyan satir yok.", "satir_sayisi": 0})
@@ -283,6 +316,9 @@ def segment_stats(column: str, operator: Literal["<", "<=", ">", ">=", "=="], va
     # Filtrenin kac kisiyi sectigi de basli basina bir bilgidir.
     try:
         get_guard().check_row_count("segment_stats", len(subset))
+        # Fark alma savunmasi: ayni kolon uzerindeki onceki sorgularla
+        # arasindaki fark k'dan azsa reddedilir.
+        get_guard().check_overlap("segment_stats", f"{column}|{metric}", len(subset))
     except GuardViolation as exc:
         return _ok({"hata": str(exc)})
 

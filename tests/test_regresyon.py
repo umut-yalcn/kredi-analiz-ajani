@@ -16,6 +16,7 @@ import pytest
 from src.config import DATA_PATH
 from src.guard import Guard, K_ANONYMITY_THRESHOLD
 from src.tools import (
+    group_aggregate,
     correlation,
     describe_column,
     get_guard,
@@ -337,3 +338,122 @@ class TestVeriYolu:
         monkeypatch.chdir(tmp_path)
         load_analysis_frame.cache_clear()
         assert not load_analysis_frame().empty
+
+
+class TestFarkAlmaSaldirisi:
+    """Bagimsiz denetimde bulundu: k-anonimlik fark alma saldirisina acikti.
+
+    Iki AYRI sorgu da k esigini geciyordu ama aralarindaki fark tek kisiydi.
+    ortalama * satir_sayisi grup toplamini verdigi icin o tek kisinin geliri
+    KESIN olarak cikariliyordu - gozlemlenen: 31499.88, gercek 31500.0.
+    Iki sorgu da guard'dan onay almisti, denetim kaydinda tek ret yoktu.
+    """
+
+    def test_ardisik_dar_farkli_sorgu_reddedilir(self):
+        g = Guard()
+        set_guard(g)
+        r1 = _c(segment_stats, column="kredi_skoru", operator="<", value=1893.0,
+                metric="aylik_gelir")
+        r2 = _c(segment_stats, column="kredi_skoru", operator="<=", value=1893.0,
+                metric="aylik_gelir")
+        assert "hata" not in r1, "ilk genis sorgu calismali"
+        assert "hata" in r2, "tek kisilik fark reddedilmeli"
+        assert any(not e["allowed"] for e in g.audit_trail())
+
+    def test_reddedilen_sorgu_deger_sizdirmaz(self):
+        set_guard(Guard())
+        _c(segment_stats, column="kredi_skoru", operator="<", value=1893.0,
+           metric="aylik_gelir")
+        r2 = _c(segment_stats, column="kredi_skoru", operator="<=", value=1893.0,
+                metric="aylik_gelir")
+        for alan in ("ortalama", "medyan", "gozlemlenen_satir", "genel_ortalama"):
+            assert alan not in r2
+
+    def test_belirgin_farkli_sorgular_calismaya_devam_eder(self):
+        """Asiri bastirma olmamali: mesru analiz engellenmemeli."""
+        set_guard(Guard())
+        a = _c(segment_stats, column="kredi_skoru", operator="<", value=1200,
+               metric="aylik_gelir")
+        b = _c(segment_stats, column="kredi_skoru", operator="<", value=1600,
+               metric="aylik_gelir")
+        assert "hata" not in a and "hata" not in b
+        assert a["gozlemlenen_satir"] != b["gozlemlenen_satir"]
+
+    def test_farkli_kolon_ciftleri_birbirini_etkilemez(self):
+        set_guard(Guard())
+        a = _c(segment_stats, column="kredi_skoru", operator="<", value=1400,
+               metric="aylik_gelir")
+        b = _c(segment_stats, column="yas", operator="<", value=40, metric="mevcut_borc")
+        assert "hata" not in a and "hata" not in b
+
+
+class TestKategorikKolonCokmesi:
+    """Bagimsiz denetimde bulundu: kategorik kolon CIPLAK istisna firlatiyordu.
+
+    ToolNode bu istisnayi yakalamadigi icin TUM ajan kosumu duyuyordu; agent
+    hatayi gorup plan degistiremiyordu. "Istanbul'daki ortalama gelir nedir?"
+    gibi dogal bir soru bu yola giriyordu.
+    """
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"column": "il", "operator": "<", "value": 1.0, "metric": "aylik_gelir"},
+            {"column": "il", "operator": "==", "value": 1.0, "metric": "aylik_gelir"},
+            {"column": "yas", "operator": "<", "value": 40, "metric": "il"},
+            {"column": "meslek_grubu", "operator": ">", "value": 0, "metric": "basvuru_sonucu"},
+        ],
+    )
+    def test_segment_stats_kategorikte_cokmez(self, kw):
+        r = _c(segment_stats, **kw)
+        assert "hata" in r
+        assert "sayisal degil" in r["hata"]
+
+    @pytest.mark.parametrize("how", ["mean", "median", "sum", "rate"])
+    def test_group_aggregate_kategorik_metrikte_cokmez(self, how):
+        r = _c(group_aggregate, group_by="meslek_grubu", metric="il", how=how)
+        assert "hata" in r
+
+    def test_count_kategorik_metrikte_hala_calisir(self):
+        """'count' her tipte anlamli; asiri kisitlama olmamali."""
+        r = _c(group_aggregate, group_by="meslek_grubu", metric="il", how="count")
+        assert "hata" not in r
+        assert r["sonuc"]
+
+    def test_sayisal_kolonlar_etkilenmedi(self):
+        r = _c(segment_stats, column="kredi_skoru", operator="<", value=1400,
+               metric="aylik_gelir")
+        assert "hata" not in r
+
+
+class TestMaskelemeKimlikOneki:
+    """Bagimsiz denetimde bulundu: acik PII etiketi olan sayilar sizabiliyordu.
+
+    'TCKN: 12345678901 TL' ve 'Musteri TCKN 12345678901 kisi' maskelenmiyordu -
+    cunku sezgisel yalnizca eslesmenin ARKASINDAKI birim kelimesine bakiyordu.
+    """
+
+    @pytest.mark.parametrize(
+        "metin",
+        [
+            "Musteri TCKN 12345678901 kisi",
+            "TCKN: 12345678901 TL",
+            "Kimlik no 12345678901 kisi",
+            "Iletisim numarasi 05551234567 kayit",
+            "tel: 05551234567 gun",
+        ],
+    )
+    def test_kimlik_etiketli_sayi_her_zaman_maskelenir(self, metin):
+        assert "MASKELENDI" in Guard().mask(metin)
+
+    @pytest.mark.parametrize(
+        "metin",
+        [
+            "Toplam portfoy 12345678901 TL",
+            "toplam: 12345678901",
+            "Ortalama 5123456789 kayit",
+            "12345678901 adet",
+        ],
+    )
+    def test_olcum_baglamindaki_sayilar_hala_korunur(self, metin):
+        assert Guard().mask(metin) == metin

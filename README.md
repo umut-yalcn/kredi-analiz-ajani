@@ -67,8 +67,25 @@ Ajan hatalı bir sorgu üretse bile ortada sızdıracak bir şey yoktur.
 doğrular. PII kolon talebi hata döner — ajan bunu görür ve planını değiştirir.
 
 **3. k-anonimlik (k=20).** 20 satırdan az veriye dayanan hiçbir toplulaştırma
-döndürülmez. Bu, tek tek kişilerin toplulaştırma sonuçları üzerinden tespit
-edilmesini engeller — kredi bürosu bağlamında asıl mesele budur.
+döndürülmez.
+
+Tek bir sorgunun eşiği geçmesi yetmiyor — bunu bağımsız bir denetimde öğrendik.
+İki *ayrı* sorgu da eşiği geçebilir ama aralarındaki fark tek kişi olabilir:
+
+```
+kredi_skoru <  1893  →  4996 satır, ortalama X
+kredi_skoru <= 1893  →  4997 satır, ortalama Y
+```
+
+`ortalama × satır_sayısı` grup toplamını verdiği için `(4997·Y − 4996·X)` o tek
+kişinin gelirini **kesin** olarak veriyordu. Ölçüldü: çıkarılan **31.499,88**,
+gerçek **31.500,0**. Her iki sorgu da guard'dan onay almıştı; denetim kaydında
+tek bir ret bile yoktu.
+
+Bu yüzden guard artık aynı kolon üzerinde dönen sonuç kümesi boyutlarını
+hatırlıyor ve yeni sorgu öncekilerden **k'dan az farklıysa** reddediyor
+(`check_overlap`). Tam bir sorgu denetimi değil — aynı süreç içinde çalışıyor —
+ama saldırıyı kurmayı engelliyor ve her reddi denetim kaydına yazıyor.
 
 **4. Çıktı maskeleme.** Üretilen metinde TCKN, telefon veya e-posta deseni
 kalırsa maskelenir. Üstteki katmanlar aşılırsa devreye giren son hat.
@@ -149,7 +166,7 @@ döner. Sistemin ne yaptığı ve neyi neden reddettiği izlenebilir.
 Koruma katmanını doğrulamak için **API anahtarı gerekmez.** İki yol var:
 
 ```bash
-pytest tests/ -q              # 89 passed
+pytest tests/ -q              # 112 passed
 python scripts/demo_guard.py  # korumaları canlı gösterir
 ```
 

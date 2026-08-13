@@ -46,6 +46,10 @@ class Guard:
 
     audit_log: list[AuditEntry] = field(default_factory=list)
 
+    #: Kolon basina daha once dondurulen sonuc kumesi boyutlari.
+    #: Fark alma savunmasi bunu kullanir; bkz. check_overlap.
+    _gecmis: dict[str, list[int]] = field(default_factory=dict, repr=False)
+
     # --- 1. Kolon izni ---------------------------------------------------
 
     def check_columns(self, action: str, columns: list[str]) -> None:
@@ -92,6 +96,47 @@ class Guard:
                 "Filtreyi genislet."
             )
 
+    # --- 2b. Fark alma (differencing) savunmasi ------------------------------
+
+    def check_overlap(self, action: str, key: str, n_rows: int) -> None:
+        """Ayni kolon uzerindeki ardisik sorgularin BIRBIRINE cok yakin olmasini engeller.
+
+        Tek bir sorgunun k satir dondurmesi yetmiyor. Iki AYRI sorgu da k esigini
+        gecebilir ama aralarindaki fark tek bir kisi olabilir:
+
+            kredi_skoru < 1893  -> 4996 satir, ortalama X
+            kredi_skoru <= 1893 -> 4997 satir, ortalama Y
+
+        ortalama * satir_sayisi grup toplamini verdigi icin (4997*Y - 4996*X) o
+        tek kisinin gelirini KESIN olarak verir. Gozlemlendi: cikarilan 31499.88,
+        gercek 31500.0. Iki sorgu da guard'dan onay almisti.
+
+        Bu yuzden ayni kolon uzerinde daha once dondurulen sonuc kumesi
+        boyutlarini hatirliyoruz; yeni sorgu oncekilerden k'dan az farkliysa
+        reddediliyor. Tam bir sorgu denetimi degil - ayni surec icinde
+        calisiyor - ama saldiriyi tek istekte kurmayi imkansiz kiliyor ve her
+        reddi denetim kaydina yaziyor.
+        """
+        oncekiler = self._gecmis.setdefault(key, [])
+        for onceki in oncekiler:
+            fark = abs(n_rows - onceki)
+            if 0 < fark < K_ANONYMITY_THRESHOLD:
+                self._record(
+                    action,
+                    (key,),
+                    False,
+                    f"Fark alma riski: onceki sorgu {onceki} satir, bu sorgu {n_rows} "
+                    f"satir; fark {fark} < {K_ANONYMITY_THRESHOLD}",
+                )
+                raise GuardViolation(
+                    f"Bu sorgu, ayni kolon uzerinde daha once calistirdigin bir sorgudan "
+                    f"yalnizca {fark} satir farkli ({onceki} -> {n_rows}). Iki sonucun "
+                    f"farki {K_ANONYMITY_THRESHOLD} kisiden az bir gruba isaret ediyor ve "
+                    "bu gruptaki kisilerin degerleri cikarilabilir. Esigi belirgin sekilde "
+                    "degistir ya da farkli bir analiz kur."
+                )
+        oncekiler.append(n_rows)
+
     # --- 3. PII maskeleme ------------------------------------------------
 
     _PII_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -119,6 +164,16 @@ class Guard:
         re.IGNORECASE,
     )
 
+    # Sayiyi acikca KIMLIK olarak niteleyen onek. Boyle bir etiket varsa
+    # arkadaki birim kelimesi ne olursa olsun maskeleme yapilir.
+    # Onceden yalnizca eslesmenin ARKASINA bakiliyordu; "TCKN: 12345678901 TL"
+    # ya da "Musteri TCKN 12345678901 kisi" maskelenmeden geciyordu.
+    _KIMLIK_ONEKI = re.compile(
+        r"(?:tckn|t\.?c\.?\s*kimlik|kimlik\s*(?:no|numaras[iı])?|vatandaslik|"
+        r"tel(?:efon)?|gsm|cep|numaras[iı])\s*[:=#]?\s*$",
+        re.IGNORECASE,
+    )
+
     def _olcum_mu(self, text: str, bas: int, son: int) -> bool:
         """Eslesen sayi, bir toplulastirma sonucu gibi mi duruyor?
 
@@ -128,9 +183,16 @@ class Guard:
         aralia girer. Deseni gevsetmek yerine - ki bu gercek PII'yi kacirmak
         demek olurdu - eslesmenin cevresine bakiyoruz.
         """
+        onceki = text[max(0, bas - 32) : bas]
+
+        # Acik kimlik etiketi her seyi gecersiz kilar: "TCKN: ... TL" bir
+        # toplam degil, etiketlenmis bir kimlik numarasidir.
+        if self._KIMLIK_ONEKI.search(onceki):
+            return False
+
         return bool(
             self._OLCU_BIRIMI.match(text[son : son + 24])
-            or self._OLCU_ONEKI.search(text[max(0, bas - 24) : bas])
+            or self._OLCU_ONEKI.search(onceki[-24:])
         )
 
     def mask(self, text: str) -> str:
