@@ -78,7 +78,7 @@ def main() -> None:
             }
         )
     )
-    print(f"   Kosul        : kredi_skoru < 1000")
+    print("   Kosul        : kredi_skoru < 1000")
     print(f"   Satir sayisi : {r.get('satir_sayisi')}")
     if "uyari" in r:
         print(f"   Sonuc        : {r['uyari']}")

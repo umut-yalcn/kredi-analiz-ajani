@@ -10,8 +10,6 @@ API anahtari gerektirmez.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -172,7 +170,7 @@ class TestDuzeltmeDongusu:
         inatci = []
         for i in range(12):
             inatci.append(_arac_cagrisi("describe_column", {"column": "gelir"}, cid=str(i)))
-            inatci.append(AIMessage(content=f"Ortalama 123 TL."))
+            inatci.append(AIMessage(content="Ortalama 123 TL."))
         sahte(inatci)
 
         sonuc = ajan_modulu.ask("soru")

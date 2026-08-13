@@ -21,7 +21,7 @@ import chromadb
 from langchain_core.tools import tool
 
 from .config import CHROMA_PATH, get_embeddings
-from .schema import CREDIT_APPLICATION_SCHEMA, Sensitivity
+from .schema import CREDIT_APPLICATION_SCHEMA
 
 COLLECTION_NAME = "veri_sozlugu"
 
