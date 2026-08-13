@@ -89,6 +89,47 @@ class TestGuardIzolasyonu:
         """ContextVar varsayilansiz; erisim once yapilirsa yenisi uretilmeli."""
         assert isinstance(get_guard(), Guard)
 
+    def test_guard_langgraph_icinden_gorunur(self):
+        """ContextVar'a gecisin en sinsi riski: LangGraph araclari baska bir
+        baglamda kosturursa ask() icinde kurulan guard araclara gorunmez ve
+        denetim kaydi BOS doner. Denetim kaydi bu projede uyumluluk kaniti
+        olarak sunuluyor; sessizce bosalmasi kabul edilemez.
+        """
+        from langchain_core.messages import AIMessage
+        from langgraph.graph import END, START, MessagesState, StateGraph
+        from langgraph.prebuilt import ToolNode
+
+        from src.tools import ANALYSIS_TOOLS
+
+        graf = StateGraph(MessagesState)
+        graf.add_node("araclar", ToolNode(ANALYSIS_TOOLS))
+        graf.add_edge(START, "araclar")
+        graf.add_edge("araclar", END)
+        app = graf.compile()
+
+        g = Guard()
+        set_guard(g)
+        app.invoke(
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "describe_column", "args": {"column": "kredi_skoru"},
+                             "id": "1", "type": "tool_call"},
+                            {"name": "describe_column", "args": {"column": "tckn"},
+                             "id": "2", "type": "tool_call"},
+                        ],
+                    )
+                ]
+            }
+        )
+
+        kayit = g.audit_trail()
+        assert kayit, "LangGraph icinden yapilan arac cagrilari denetime yazilmadi"
+        assert any(e["allowed"] for e in kayit)
+        assert any(not e["allowed"] for e in kayit), "PII reddi kayda gecmedi"
+
 
 class TestKorelasyonSatirSayisi:
     """Bulgu 3: correlation, NaN'lar dusmesine ragmen len(df) bildiriyordu."""
