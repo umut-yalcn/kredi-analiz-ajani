@@ -96,7 +96,10 @@ class Guard:
 
     _PII_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ("TCKN", re.compile(r"\b[1-9][0-9]{10}\b")),
-        ("TELEFON", re.compile(r"\b(?:\+90|0)?5[0-9]{9}\b")),
+        # Bastaki \b yerine rakam-olmayan lookbehind kullaniliyor. \b, dizgenin
+        # basinda "+" onunde sinir bulamadigi icin "+905551234567" HIC
+        # eslesmiyordu - uluslararasi formattaki numara maskelemeden siziyordu.
+        ("TELEFON", re.compile(r"(?<![0-9])(?:\+90|0)?5[0-9]{9}(?![0-9])")),
         ("EMAIL", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b")),
     )
 

@@ -217,6 +217,34 @@ class TestMaskelemeBaglami:
     def test_gercek_pii_hala_maskelenir(self, metin):
         assert "MASKELENDI" in Guard().mask(metin)
 
+    @pytest.mark.parametrize(
+        "metin",
+        [
+            "+905551234567",
+            "Tel: +905551234567",
+            "tel:+905551234567.",
+            "05551234567",
+            "5551234567",
+        ],
+    )
+    def test_telefon_tum_bicimleriyle_maskelenir(self, metin):
+        """Regresyon: desen `\\b(?:\\+90|0)?5[0-9]{9}\\b` seklindeydi.
+
+        Bastaki \\b, dizgenin basinda "+" onunde sinir bulamadigi icin
+        "+905551234567" HIC eslesmiyordu. Uluslararasi formattaki numara
+        maskeleme katmanindan sessizce siziyordu.
+        """
+        assert "TELEFON_MASKELENDI" in Guard().mask(metin)
+
+    @pytest.mark.parametrize("metin", ["1234567890", "123456789012", "2026", "905551234567"])
+    def test_telefon_olmayan_sayilar_maskelenmez(self, metin):
+        """10 hane, 12 hane ve yil gibi degerler telefon sayilmaz.
+
+        Not: "15551234567" bilerek disarida - 11 haneli ve sifirla baslamadigi
+        icin TCKN desenine uyar ve maskelenmesi DOGRUDUR.
+        """
+        assert Guard().mask(metin) == metin
+
     def test_korunan_sayi_da_denetime_yazilir(self):
         """Maskelenmeme karari da bir karardir; izlenebilir olmali."""
         g = Guard()
