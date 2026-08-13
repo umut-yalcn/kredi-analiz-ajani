@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import math
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -59,8 +60,26 @@ def load_analysis_frame() -> pd.DataFrame:
     return df.drop(columns=[c for c in PII_COLUMNS if c in df.columns])
 
 
+def _json_guvenli(deger: Any) -> Any:
+    """NaN ve sonsuzlugu None'a cevirir.
+
+    Python'un json.dumps'i NaN'a izin verip literal `NaN` yazar - ama bu
+    GECERLI JSON DEGILDIR. Model saglayicilari boyle bir govdeyi 400 ile
+    reddediyor ve agent komple duser. Bu araclar bugun her yerde dropna()
+    kullandigi icin NaN uretmiyor; kontrol, ileride bir kolon uretirse
+    sessizce bozuk JSON cikmasin diye burada duruyor.
+    """
+    if isinstance(deger, float):
+        return None if (math.isnan(deger) or math.isinf(deger)) else deger
+    if isinstance(deger, dict):
+        return {k: _json_guvenli(v) for k, v in deger.items()}
+    if isinstance(deger, (list, tuple)):
+        return [_json_guvenli(v) for v in deger]
+    return deger
+
+
 def _ok(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, ensure_ascii=False, default=str)
+    return json.dumps(_json_guvenli(payload), ensure_ascii=False, default=str, allow_nan=False)
 
 
 @tool
