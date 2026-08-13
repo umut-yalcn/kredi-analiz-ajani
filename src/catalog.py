@@ -12,6 +12,7 @@ Embedding API uzerinden alinir; yerel model indirilmez.
 from __future__ import annotations
 
 import json
+import time
 from functools import lru_cache
 from typing import Any
 
@@ -24,17 +25,55 @@ from .schema import CREDIT_APPLICATION_SCHEMA, Sensitivity
 COLLECTION_NAME = "veri_sozlugu"
 
 
+#: Embedding cagrisi ag kaynakli gecici hatalarla dusebiliyor (gozlemlenen:
+#: "SSL: INVALID_SESSION_ID"). Tek bir gecici hata tum agent kosumunu
+#: dusurmemeli - ozellikle canli demoda.
+EMBEDDING_DENEME = 3
+EMBEDDING_BEKLEME = 1.5
+
+
 class GoogleEmbeddingFunction:
-    """Chroma'nin bekledigi embedding arayuzunu LangChain modeline baglar."""
+    """Chroma'nin bekledigi embedding arayuzunu LangChain modeline baglar.
+
+    Chroma (>=1.x) belge ve sorgu icin AYRI cagri yapar: belgeler `__call__`
+    uzerinden, sorgular `embed_query` uzerinden gider. Yalnizca `__call__`
+    tanimlanirsa arama calisma aninda AttributeError ile duser. Ayrim ayrica
+    dogru: embedding modeli sorgu ile belgeyi farkli gorevler olarak kodlar.
+    """
 
     def __init__(self) -> None:
         self._model = get_embeddings()
 
-    def __call__(self, input: list[str]) -> list[list[float]]:  # noqa: A002 - Chroma imzasi
-        return self._model.embed_documents(list(input))
+    @staticmethod
+    def _metinler(input: Any) -> list[str]:  # noqa: A002 - Chroma imzasi
+        if isinstance(input, str):
+            return [input]
+        return [str(t) for t in input]
+
+    def _dene(self, fn):
+        """Gecici ag hatalarina karsi yeniden dener."""
+        son_hata: Exception | None = None
+        for deneme in range(EMBEDDING_DENEME):
+            try:
+                return fn()
+            except Exception as hata:  # saglayici hatalarini tek tek ayirmiyoruz
+                son_hata = hata
+                if deneme < EMBEDDING_DENEME - 1:
+                    time.sleep(EMBEDDING_BEKLEME * (deneme + 1))
+        raise RuntimeError(
+            f"Embedding {EMBEDDING_DENEME} denemede alinamadi: {son_hata}"
+        ) from son_hata
+
+    def __call__(self, input: Any) -> list[list[float]]:  # noqa: A002 - Chroma imzasi
+        metinler = self._metinler(input)
+        return self._dene(lambda: self._model.embed_documents(metinler))
+
+    def embed_query(self, input: Any) -> list[list[float]]:  # noqa: A002 - Chroma imzasi
+        metinler = self._metinler(input)
+        return self._dene(lambda: [self._model.embed_query(t) for t in metinler])
 
     def name(self) -> str:
-        return "google-text-embedding-004"
+        return "google-gemini-embedding"
 
 
 @lru_cache(maxsize=1)

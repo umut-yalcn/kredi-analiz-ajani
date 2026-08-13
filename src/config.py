@@ -8,6 +8,7 @@ kullanildigini bilmez.
 from __future__ import annotations
 
 import os
+import pathlib
 from functools import lru_cache
 
 from dotenv import load_dotenv
@@ -37,6 +38,34 @@ class ConfigError(RuntimeError):
     pass
 
 
+# Google AI Studio ucretsiz katmani dakikada 5 istekle sinirli (gozlemlenen hata:
+# "generate_content_free_tier_requests, limit: 5"). Agent tek bir soruda 7-10
+# model cagrisi yapabildigi icin bu limit sorgunun ortasinda 429 ile carpiyor.
+# Model cagrilarini kendimiz yavaslatiyoruz: yavas calismak, yarida kalmaktan iyi.
+# Ucretli katmanda ISTEK_HIZI_RPM=0 ile kapatilabilir.
+VARSAYILAN_RPM = 4
+
+
+@lru_cache(maxsize=1)
+def _hiz_sinirlayici():
+    """Dakikadaki istek sinirini uygulayan limitleyici. 0 ise kapali."""
+    try:
+        rpm = float(os.getenv("ISTEK_HIZI_RPM", "").strip() or VARSAYILAN_RPM)
+    except ValueError:
+        rpm = VARSAYILAN_RPM
+
+    if rpm <= 0:
+        return None
+
+    from langchain_core.rate_limiters import InMemoryRateLimiter
+
+    return InMemoryRateLimiter(
+        requests_per_second=rpm / 60.0,
+        check_every_n_seconds=0.5,
+        max_bucket_size=1,
+    )
+
+
 @lru_cache(maxsize=1)
 def get_llm(temperature: float = 0.0) -> BaseChatModel:
     """Ortam degiskenlerine gore yapilandirilmis sohbet modelini dondurur."""
@@ -51,11 +80,18 @@ def get_llm(temperature: float = 0.0) -> BaseChatModel:
             )
         from langchain_google_genai import ChatGoogleGenerativeAI
 
+        kwargs: dict = {"model": model}
+
         # Gemini 3.x sabit ornekleme kullanir ve temperature'i yok sayar
         # (gecirilirse uyari basar). Yalnizca eski modellerde gonderiyoruz.
-        if model.startswith("gemini-3"):
-            return ChatGoogleGenerativeAI(model=model)
-        return ChatGoogleGenerativeAI(model=model, temperature=temperature)
+        if not model.startswith("gemini-3"):
+            kwargs["temperature"] = temperature
+
+        limitleyici = _hiz_sinirlayici()
+        if limitleyici is not None:
+            kwargs["rate_limiter"] = limitleyici
+
+        return ChatGoogleGenerativeAI(**kwargs)
 
     if provider == "anthropic":
         if not os.getenv("ANTHROPIC_API_KEY"):
@@ -90,5 +126,17 @@ def get_embeddings():
     return GoogleGenerativeAIEmbeddings(model=model)
 
 
-DATA_PATH = os.getenv("DATA_PATH", "data/kredi_basvurulari.csv")
-CHROMA_PATH = os.getenv("CHROMA_PATH", "chroma_store")
+# Yollar proje kokune gore mutlak cozulur. Goreli birakilsaydi kod yalnizca
+# proje dizininden calistirildiginda calisirdi; uvicorn veya test kosumu baska
+# bir dizinden baslatildiginda veri bulunamazdi.
+_KOK = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _yol(env_adi: str, varsayilan: str) -> str:
+    deger = os.getenv(env_adi, "").strip() or varsayilan
+    p = pathlib.Path(deger)
+    return str(p if p.is_absolute() else _KOK / p)
+
+
+DATA_PATH = _yol("DATA_PATH", "data/kredi_basvurulari.csv")
+CHROMA_PATH = _yol("CHROMA_PATH", "chroma_store")

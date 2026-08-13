@@ -100,6 +100,36 @@ class Guard:
         ("EMAIL", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b")),
     )
 
+    # Bir sayiyi toplulastirma sonucu yapan birimler. TCKN veya telefon
+    # numarasi bu kelimelerle nitelenmez; toplam tutar, adet ve sure nitelenir.
+    _OLCU_BIRIMI = re.compile(
+        r"^\s*(?:tl|try|₺|lira|adet|kayit|kayıt|basvuru|başvuru|kisi|kişi|musteri|"
+        r"müsteri|müşteri|satir|satır|gun|gün|ay|yil|yıl|puan|krd)\b",
+        re.IGNORECASE,
+    )
+
+    # Sayiyi bir olcume baglayan onek. "toplam 12345678901" bir kimlik numarasi
+    # degil, bir toplamdir.
+    _OLCU_ONEKI = re.compile(
+        r"(?:toplam|ortalama|genel|medyan|std|sapma|adet|say[iı]s[iı]|"
+        r"tutar[iı]?|hacim|bakiye|limit|portfoy|portföy)\s*[:=]?\s*$",
+        re.IGNORECASE,
+    )
+
+    def _olcum_mu(self, text: str, bas: int, son: int) -> bool:
+        """Eslesen sayi, bir toplulastirma sonucu gibi mi duruyor?
+
+        TCKN ve telefon desenleri buyuk tam sayilarla kacinilmaz olarak cakisir:
+        11 haneli her sayi TCKN'ye, 5 ile baslayan 10 haneli her sayi telefona
+        benzer. Bir kredi burosunda toplam portfoy buyuklugu rahatlikla bu
+        aralia girer. Deseni gevsetmek yerine - ki bu gercek PII'yi kacirmak
+        demek olurdu - eslesmenin cevresine bakiyoruz.
+        """
+        return bool(
+            self._OLCU_BIRIMI.match(text[son : son + 24])
+            or self._OLCU_ONEKI.search(text[max(0, bas - 24) : bas])
+        )
+
     def mask(self, text: str) -> str:
         """Modelin urettigi metinde PII deseni kalmissa maskeler.
 
@@ -108,12 +138,37 @@ class Guard:
         """
         masked = text
         for label, pattern in self._PII_PATTERNS:
-            masked, n = pattern.subn(f"[{label}_MASKELENDI]", masked)
-            if n:
-                self._record("mask_output", (), True, f"{n} adet {label} maskelendi")
+            atlanan = 0
+
+            def _degistir(m: re.Match[str], _label: str = label) -> str:
+                nonlocal atlanan
+                if _label != "EMAIL" and self._olcum_mu(m.string, m.start(), m.end()):
+                    atlanan += 1
+                    return m.group(0)
+                return f"[{_label}_MASKELENDI]"
+
+            masked, n = pattern.subn(_degistir, masked)
+            maskelenen = n - atlanan
+            if maskelenen:
+                self._record("mask_output", (), True, f"{maskelenen} adet {label} maskelendi")
+            if atlanan:
+                self._record(
+                    "mask_output",
+                    (),
+                    True,
+                    f"{atlanan} adet {label} benzeri sayi olcum baglaminda oldugu icin korundu",
+                )
         return masked
 
     # --- 4. Denetim kaydi ------------------------------------------------
+
+    def note(self, action: str, columns: tuple[str, ...] | list[str], reason: str) -> None:
+        """Reddetme olmayan bir guard kararini kayda gecirir.
+
+        Ornegin bir uc degerin k esigi nedeniyle bastirilmasi: istek reddedilmiyor
+        ama sonuctan bir sey cikariliyor. Bunun izlenebilir olmasi gerekir.
+        """
+        self._record(action, columns, True, reason)
 
     def _record(self, action: str, columns: tuple[str, ...] | list[str], allowed: bool, reason: str) -> None:
         self.audit_log.append(

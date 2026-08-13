@@ -7,6 +7,7 @@ Guard, o ilk savunmanin uzerine gelen ikinci ve ucuncu katman.
 
 from __future__ import annotations
 
+import contextvars
 import json
 from functools import lru_cache
 from typing import Any, Literal
@@ -15,7 +16,7 @@ import pandas as pd
 from langchain_core.tools import tool
 
 from .config import DATA_PATH
-from .guard import Guard, GuardViolation
+from .guard import K_ANONYMITY_THRESHOLD, Guard, GuardViolation
 from .schema import (
     ANALYZABLE_COLUMNS,
     BY_NAME,
@@ -24,17 +25,26 @@ from .schema import (
     PII_COLUMNS,
 )
 
-# Istek boyunca paylasilan guard ornegi. Agent her calistiginda yenilenir.
-_active_guard: Guard = Guard()
+# Istek boyunca yasayan guard. Modul seviyesinde tek bir global kullanmak yerine
+# ContextVar kullaniyoruz: FastAPI istekleri es zamanli calisir ve global bir
+# degisken kullanilsaydi ikinci istek birincinin guard'ini ezerdi. O durumda
+# denetim kaydi yanlis istege yazilir - uyumluluk kaniti olarak sunulan bir
+# yapida bu kabul edilemez. ContextVar her istege kendi kopyasini verir.
+_guard_var: contextvars.ContextVar[Guard] = contextvars.ContextVar("aktif_guard")
 
 
 def set_guard(guard: Guard) -> None:
-    global _active_guard
-    _active_guard = guard
+    _guard_var.set(guard)
 
 
 def get_guard() -> Guard:
-    return _active_guard
+    """Bu baglama ait guard'i dondurur; yoksa yenisini olusturur."""
+    try:
+        return _guard_var.get()
+    except LookupError:
+        guard = Guard()
+        _guard_var.set(guard)
+        return guard
 
 
 @lru_cache(maxsize=1)
@@ -89,7 +99,7 @@ def describe_column(column: str) -> str:
         column: Incelenecek kolonun adi.
     """
     try:
-        _active_guard.check_columns("describe_column", [column])
+        get_guard().check_columns("describe_column", [column])
     except GuardViolation as exc:
         return _ok({"hata": str(exc)})
 
@@ -97,23 +107,51 @@ def describe_column(column: str) -> str:
     series = df[column]
 
     if column in NUMERIC_COLUMNS:
-        q = series.quantile([0.25, 0.5, 0.75])
-        return _ok(
-            {
-                "kolon": column,
-                "satir_sayisi": int(series.count()),
-                "ortalama": round(float(series.mean()), 2),
-                "std_sapma": round(float(series.std()), 2),
-                "min": round(float(series.min()), 2),
-                "q25": round(float(q.loc[0.25]), 2),
-                "medyan": round(float(q.loc[0.5]), 2),
-                "q75": round(float(q.loc[0.75]), 2),
-                "max": round(float(series.max()), 2),
-            }
-        )
+        gozlem = series.dropna()
+        q = gozlem.quantile([0.05, 0.25, 0.5, 0.75, 0.95])
+
+        # Uc degerler k-anonimlige tabidir. Bir kolonun en yuksek degeri tek bir
+        # kisiye aitse, o degeri bildirmek o kisiyi isaret eder - toplulastirma
+        # gorunumu altinda tekil aciklama olur. Uc degeri yalnizca en az k kisi
+        # ayni degeri paylasiyorsa veriyoruz; aksi halde q05/q95 ile yetiniyoruz.
+        # Ayrik kolonlarda (vade_ay, aktif_kredi_sayisi) uc degerler genellikle
+        # esigi gecer ve normal sekilde raporlanir.
+        ozet: dict[str, Any] = {
+            "kolon": column,
+            "satir_sayisi": int(gozlem.count()),
+            "ortalama": round(float(gozlem.mean()), 2),
+            "std_sapma": round(float(gozlem.std()), 2),
+            "q05": round(float(q.loc[0.05]), 2),
+            "q25": round(float(q.loc[0.25]), 2),
+            "medyan": round(float(q.loc[0.5]), 2),
+            "q75": round(float(q.loc[0.75]), 2),
+            "q95": round(float(q.loc[0.95]), 2),
+        }
+
+        bastirilan = []
+        for etiket, deger in (("min", gozlem.min()), ("max", gozlem.max())):
+            paylasan = int((gozlem == deger).sum())
+            if paylasan >= K_ANONYMITY_THRESHOLD:
+                ozet[etiket] = round(float(deger), 2)
+            else:
+                bastirilan.append(etiket)
+                get_guard().note(
+                    "describe_column",
+                    (column,),
+                    f"{etiket} degeri {paylasan} kisiye ait, k<{K_ANONYMITY_THRESHOLD} - bastirildi",
+                )
+
+        if bastirilan:
+            ozet["bastirilan_uc_degerler"] = bastirilan
+            ozet["not"] = (
+                f"{', '.join(bastirilan)} degeri {K_ANONYMITY_THRESHOLD} kisiden "
+                "azina ait oldugu icin bastirildi. Dagilimin ucu icin q05/q95 kullan."
+            )
+
+        return _ok(ozet)
 
     counts = series.value_counts()
-    suppressed = _active_guard.check_group_sizes("describe_column", counts.to_dict())
+    suppressed = get_guard().check_group_sizes("describe_column", counts.to_dict())
     counts = counts.drop(index=suppressed, errors="ignore")
     return _ok(
         {
@@ -144,7 +182,7 @@ def group_aggregate(
         how: Toplulastirma yontemi. 'rate' 0/1 kolonlar icin oran hesaplar.
     """
     try:
-        _active_guard.check_columns("group_aggregate", [group_by, metric])
+        get_guard().check_columns("group_aggregate", [group_by, metric])
     except GuardViolation as exc:
         return _ok({"hata": str(exc)})
 
@@ -163,7 +201,7 @@ def group_aggregate(
     # gruptaki toplam satira degil. Aksi halde metrigin cogunlukla bos oldugu
     # bir grup, esigi gecmis gibi gorunurdu.
     sizes = grouped.count().to_dict()
-    suppressed = _active_guard.check_group_sizes("group_aggregate", sizes)
+    suppressed = get_guard().check_group_sizes("group_aggregate", sizes)
 
     result = grouped.mean() if how == "rate" else getattr(grouped, how)()
     result = result.drop(index=suppressed, errors="ignore").dropna()
@@ -203,7 +241,7 @@ def segment_stats(column: str, operator: Literal["<", "<=", ">", ">=", "=="], va
         metric: Ozeti alinacak sayisal kolon.
     """
     try:
-        _active_guard.check_columns("segment_stats", [column, metric])
+        get_guard().check_columns("segment_stats", [column, metric])
     except GuardViolation as exc:
         return _ok({"hata": str(exc)})
 
@@ -220,12 +258,21 @@ def segment_stats(column: str, operator: Literal["<", "<=", ">", ">=", "=="], va
     if subset.empty:
         return _ok({"uyari": "Bu kosula uyan satir yok.", "satir_sayisi": 0})
 
+    # k esigi ONCE alt kumenin kendisine uygulanir. Aksi halde metrigin hic
+    # gozlemlenmedigi bir segmentte fonksiyon erken donuyor ve alt kume boyutu
+    # ("bu kosula 1 kisi uyuyor") k kontrolunden gecmeden disari cikiyordu.
+    # Filtrenin kac kisiyi sectigi de basli basina bir bilgidir.
+    try:
+        get_guard().check_row_count("segment_stats", len(subset))
+    except GuardViolation as exc:
+        return _ok({"hata": str(exc)})
+
     # Metrik bazi satirlarda gozlemlenmemis olabilir (orn. reddedilen basvuruda
     # temerrut). k-anonimlik esigi gozlemlenen satir sayisina uygulanir.
     observed = subset[metric].dropna()
 
     try:
-        _active_guard.check_row_count("segment_stats", len(observed))
+        get_guard().check_row_count("segment_stats", len(observed))
     except GuardViolation as exc:
         return _ok({"hata": str(exc)})
 
@@ -266,7 +313,7 @@ def correlation(column_a: str, column_b: str) -> str:
         column_b: Ikinci sayisal kolon.
     """
     try:
-        _active_guard.check_columns("correlation", [column_a, column_b])
+        get_guard().check_columns("correlation", [column_a, column_b])
     except GuardViolation as exc:
         return _ok({"hata": str(exc)})
 
@@ -280,7 +327,22 @@ def correlation(column_a: str, column_b: str) -> str:
             )
 
     df = load_analysis_frame()
-    r = float(df[column_a].corr(df[column_b]))
+
+    # Korelasyon yalnizca IKI kolonun da gozlemlendigi satirlar uzerinden
+    # hesaplanir. Onceden len(df) bildiriliyordu; temerrut gibi reddedilen
+    # basvurularda bos kalan bir kolonda bu, kullanilmayan binlerce satiri
+    # sayiyordu. Reject inference'i dogru kuran bir projede burada da ayni
+    # titizlik gerekir.
+    cift = df[[column_a, column_b]].dropna()
+    if len(cift) < K_ANONYMITY_THRESHOLD:
+        return _ok(
+            {
+                "hata": f"Bu iki kolonun birlikte gozlemlendigi yalnizca {len(cift)} "
+                f"satir var. En az {K_ANONYMITY_THRESHOLD} gerekiyor."
+            }
+        )
+
+    r = float(cift[column_a].corr(cift[column_b]))
     if abs(r) < 0.1:
         yorum = "ihmal edilebilir"
     elif abs(r) < 0.3:
@@ -296,7 +358,9 @@ def correlation(column_a: str, column_b: str) -> str:
             "pearson_r": round(r, 4),
             "yon": "pozitif" if r > 0 else "negatif",
             "guc": yorum,
-            "satir_sayisi": len(df),
+            "kullanilan_satir_sayisi": len(cift),
+            "veri_setindeki_satir_sayisi": len(df),
+            "dusen_satir_sayisi": len(df) - len(cift),
         }
     )
 

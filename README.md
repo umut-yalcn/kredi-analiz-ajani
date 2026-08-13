@@ -81,13 +81,24 @@ döner. Sistemin ne yaptığı ve neyi neden reddettiği izlenebilir.
 Koruma katmanını doğrulamak için **API anahtarı gerekmez.** İki yol var:
 
 ```bash
-pytest tests/ -q              # 19 passed
+pytest tests/ -q              # 43 passed
 python scripts/demo_guard.py  # korumaları canlı gösterir
 ```
 
 Testler; her PII kolonunun ayrı ayrı reddedildiğini, PII'nin masum bir kolonun
 yanına saklanarak geçirilemediğini, k eşiğinin uygulandığını ve normal sayıların
 (kredi skoru, tutar) yanlışlıkla maskelenmediğini kontrol eder.
+
+`tests/test_regresyon.py` ayrı bir iş yapar: bir denetimde bulunan altı gerçek
+sorunu kilitler. Her testin başlığı bulgunun ne olduğunu anlatır — birisi o
+davranışı geri getirirse test düşer. Kapatılan başlıca açıklar:
+
+| Sorun | Neydi |
+|---|---|
+| Segment sızıntısı | Metrik hiç gözlemlenmemişse alt küme boyutu k kontrolünden geçmeden dönüyordu. `kredi_skoru < 700` → `{'satir_sayisi': 1}` |
+| Guard yarışı | `_active_guard` modül globaliydi; eş zamanlı isteklerde denetim kayıtları karışıyordu. `ContextVar` ile izole edildi |
+| Uç değer ifşası | Sayısal özetlerde `min`/`max` k eşiğine tabi değildi; `talep_edilen_tutar` maksimumunu 2 kişi paylaşıyordu |
+| Yanlış `n` | `correlation`, NaN'lar düşmesine rağmen 5000 satır bildiriyordu (gerçekte 3597) |
 
 `demo_guard.py` model çağrısı yapmadan araçları doğrudan çalıştırır: gerçek
 analizleri, reddedilen istekleri ve denetim kaydını sırayla gösterir.
