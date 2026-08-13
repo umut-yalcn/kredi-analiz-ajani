@@ -12,6 +12,7 @@ Embedding API uzerinden alinir; yerel model indirilmez.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from functools import lru_cache
 from typing import Any
@@ -78,14 +79,23 @@ class GoogleEmbeddingFunction:
         return "google-gemini-embedding"
 
 
+#: chromadb.PersistentClient, sinif duzeyinde paylasilan bir sozluk kullaniyor
+#: ve bu sozluk kilitsiz. LangGraph araclari thread havuzunda kosturdugu icin
+#: iki thread ayni anda ilk istemciyi olusturmaya kalkinca yaris olusuyor ve
+#: KeyError firliyor. lru_cache bunu engellemiyor: onbellek dolmadan once
+#: fonksiyon iki kez cagrilabilir. Olusturmayi kilitliyoruz.
+_istemci_kilidi = threading.Lock()
+
+
 @lru_cache(maxsize=1)
 def _collection():
-    client = chromadb.PersistentClient(path=CHROMA_PATH)
-    return client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        embedding_function=GoogleEmbeddingFunction(),
-        metadata={"hnsw:space": "cosine"},
-    )
+    with _istemci_kilidi:
+        client = chromadb.PersistentClient(path=CHROMA_PATH)
+        return client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            embedding_function=GoogleEmbeddingFunction(),
+            metadata={"hnsw:space": "cosine"},
+        )
 
 
 def build_catalog(force: bool = False) -> int:

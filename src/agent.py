@@ -21,7 +21,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from .catalog import CATALOG_TOOLS
-from .config import get_llm
+from .config import dayanikli, get_llm
 from .guard import Guard, K_ANONYMITY_THRESHOLD
 from .tools import ANALYSIS_TOOLS, set_guard
 
@@ -144,7 +144,7 @@ def _duzeltici_mesaj(hatalar: list[str]) -> str:
 
 def build_agent():
     """Derlenmis LangGraph akisini dondurur."""
-    llm = get_llm().bind_tools(ALL_TOOLS)
+    llm = dayanikli(get_llm().bind_tools(ALL_TOOLS))
 
     def call_model(state: AnalizDurumu) -> dict[str, Any]:
         messages = state["messages"]
@@ -156,7 +156,7 @@ def build_agent():
                     "bulgularla cevabini yaz, yeni arac cagrisi yapma."
                 )
             ]
-            return {"messages": [get_llm().invoke([SystemMessage(SYSTEM_PROMPT)] + messages)]}
+            return {"messages": [dayanikli(get_llm()).invoke([SystemMessage(SYSTEM_PROMPT)] + messages)]}
 
         return {"messages": [llm.invoke([SystemMessage(SYSTEM_PROMPT)] + messages)]}
 

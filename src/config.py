@@ -138,5 +138,25 @@ def _yol(env_adi: str, varsayilan: str) -> str:
     return str(p if p.is_absolute() else _KOK / p)
 
 
+#: Model cagrilari gecici ag hatalariyla dusebiliyor. Gozlenen desen:
+#: tek bir cagri geciyor, cok cagrili ajan kosumu "SSL: INVALID_SESSION_ID"
+#: ile duser. Hiz sinirlayici cagrilar arasinda ~15 saniye bekledigi icin
+#: TLS oturumu bayatliyor ve yeniden kullanim basarisiz oluyor.
+#: Saglayicinin kendi max_retries'i bu baglanti hatasini kapsamiyor.
+LLM_DENEME = 4
+
+
+def dayanikli(runnable, deneme: int = LLM_DENEME):
+    """Bir Runnable'i gecici hatalara karsi yeniden denenir hale getirir.
+
+    bind_tools SONRASI uygulanmali; sonuc artik BaseChatModel degil Runnable'dir
+    ama LangGraph yalnizca invoke cagirdigi icin sorun olmaz.
+    """
+    return runnable.with_retry(
+        stop_after_attempt=deneme,
+        wait_exponential_jitter=True,
+    )
+
+
 DATA_PATH = _yol("DATA_PATH", "data/kredi_basvurulari.csv")
 CHROMA_PATH = _yol("CHROMA_PATH", "chroma_store")

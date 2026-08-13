@@ -35,6 +35,11 @@ class SahteModel:
     def bind_tools(self, _araclar):
         return self
 
+    def with_retry(self, *args, **kwargs):
+        # config.dayanikli() gercek modeli Runnable.with_retry ile sariyor;
+        # sahte model bu cagriyi karsilamali.
+        return self
+
     def invoke(self, mesajlar, *args, **kwargs) -> AIMessage:
         self.gorulen_istemler.append(mesajlar)
         if self.cevaplar:
