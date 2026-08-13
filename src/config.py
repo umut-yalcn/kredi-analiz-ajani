@@ -8,6 +8,7 @@ kullanildigini bilmez.
 from __future__ import annotations
 
 import os
+import time
 import pathlib
 from functools import lru_cache
 
@@ -144,18 +145,60 @@ def _yol(env_adi: str, varsayilan: str) -> str:
 #: TLS oturumu bayatliyor ve yeniden kullanim basarisiz oluyor.
 #: Saglayicinin kendi max_retries'i bu baglanti hatasini kapsamiyor.
 LLM_DENEME = 4
+LLM_BEKLEME = 2.0
+
+#: Yeniden denenmeyecek hatalar. Bunlar tekrar denemekle duzelmez; denemek
+#: yalnizca kullaniciyi bekletir. Olculdu: gunluk kotasi dolmus bir modelde
+#: ayrimsiz yeniden deneme cagriyi 36 saniyeden 146 saniyeye cikariyordu.
+KALICI_HATA_IZLERI = (
+    "RESOURCE_EXHAUSTED", "429", "quota",          # kota
+    "INVALID_ARGUMENT", "400",                      # bozuk istek
+    "PERMISSION_DENIED", "403", "API key",          # yetki
+    "NOT_FOUND", "404",                             # yanlis model adi
+)
+
+
+def _gecici_mi(hata: BaseException) -> bool:
+    """Hata tekrar denemekle duzelebilir mi?"""
+    metin = str(hata)
+    return not any(iz in metin for iz in KALICI_HATA_IZLERI)
+
+
+class _Dayanikli:
+    """invoke cagrisini GECICI hatalarda yeniden dener.
+
+    Runnable.with_retry kullanmiyoruz cunku o yalnizca istisna TIPINE gore
+    filtreliyor; saglayici hem kota hem baglanti hatasini ayni tipte
+    sariyor. Ayrimi hata metninden yapmak zorundayiz.
+
+    invoke disindaki her sey sarilan nesneye devrediliyor.
+    """
+
+    def __init__(self, ic, deneme: int = LLM_DENEME, bekleme: float = LLM_BEKLEME) -> None:
+        self._ic = ic
+        self._deneme = deneme
+        self._bekleme = bekleme
+
+    def invoke(self, *args, **kwargs):
+        for deneme in range(self._deneme):
+            try:
+                return self._ic.invoke(*args, **kwargs)
+            except Exception as hata:
+                son = deneme == self._deneme - 1
+                if son or not _gecici_mi(hata):
+                    raise
+                time.sleep(self._bekleme * (2 ** deneme))
+
+    def __getattr__(self, ad):
+        return getattr(self._ic, ad)
 
 
 def dayanikli(runnable, deneme: int = LLM_DENEME):
-    """Bir Runnable'i gecici hatalara karsi yeniden denenir hale getirir.
+    """Bir cagrilabiliri gecici hatalara karsi yeniden denenir hale getirir.
 
-    bind_tools SONRASI uygulanmali; sonuc artik BaseChatModel degil Runnable'dir
-    ama LangGraph yalnizca invoke cagirdigi icin sorun olmaz.
+    bind_tools SONRASI uygulanmali.
     """
-    return runnable.with_retry(
-        stop_after_attempt=deneme,
-        wait_exponential_jitter=True,
-    )
+    return _Dayanikli(runnable, deneme=deneme)
 
 
 DATA_PATH = _yol("DATA_PATH", "data/kredi_basvurulari.csv")

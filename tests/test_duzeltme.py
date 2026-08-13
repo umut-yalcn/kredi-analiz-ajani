@@ -197,3 +197,84 @@ class TestDuzeltmeDongusu:
         assert any(not e["allowed"] for e in kayit), "reddedilen istek kayda gecmedi"
         assert any(e["allowed"] for e in kayit), "izin verilen istek kayda gecmedi"
         assert sonuc["dayanaksiz_cevap"] is False
+
+
+class TestSecmeliYenidenDeneme:
+    """Gecici hatada tekrar dene, kalici hatada deneme.
+
+    Regresyon: ilk surumde Runnable.with_retry kullaniliyordu ve o yalnizca
+    istisna TIPINE gore filtreliyor. Saglayici hem kota hem baglanti hatasini
+    ayni tipte sardigi icin kota hatasi da 4 kez deneniyordu. Olculdu: gunluk
+    kotasi dolmus bir modelde cagri 36 saniyeden 146 saniyeye cikiyordu.
+    """
+
+    @pytest.mark.parametrize(
+        "mesaj",
+        [
+            "429 RESOURCE_EXHAUSTED quota exceeded",
+            "400 INVALID_ARGUMENT: Invalid JSON payload",
+            "403 PERMISSION_DENIED: API key not valid",
+            "404 NOT_FOUND: model bulunamadi",
+        ],
+    )
+    def test_kalici_hatalar_tekrar_denenmez(self, mesaj):
+        from src.config import _gecici_mi
+
+        assert _gecici_mi(Exception(mesaj)) is False
+
+    @pytest.mark.parametrize(
+        "mesaj",
+        [
+            "[SSL: INVALID_SESSION_ID] invalid session id",
+            "ConnectError: connection refused",
+            "503 Service Unavailable",
+            "ReadTimeout",
+        ],
+    )
+    def test_gecici_hatalar_tekrar_denenir(self, mesaj):
+        from src.config import _gecici_mi
+
+        assert _gecici_mi(Exception(mesaj)) is True
+
+    def test_kalici_hatada_tek_cagri_yapilir(self):
+        from src.config import dayanikli
+
+        class Patlak:
+            sayac = 0
+
+            def invoke(self, *a, **k):
+                Patlak.sayac += 1
+                raise Exception("429 RESOURCE_EXHAUSTED")
+
+        with pytest.raises(Exception):
+            dayanikli(Patlak(), deneme=4).invoke("x")
+        assert Patlak.sayac == 1
+
+    def test_gecici_hatada_sinira_kadar_denenir(self):
+        from src.config import dayanikli
+
+        class Patlak:
+            sayac = 0
+
+            def invoke(self, *a, **k):
+                Patlak.sayac += 1
+                raise Exception("SSL error")
+
+        with pytest.raises(Exception):
+            dayanikli(Patlak(), deneme=3).invoke("x")
+        assert Patlak.sayac == 3
+
+    def test_basarili_cagri_sarmalayicidan_gecer(self):
+        from src.config import dayanikli
+
+        class Calisan:
+            def invoke(self, x):
+                return f"sonuc:{x}"
+
+            def bind_tools(self, _):
+                return self
+
+        sarili = dayanikli(Calisan())
+        assert sarili.invoke("a") == "sonuc:a"
+        # invoke disindaki cagriler sarilan nesneye devredilmeli
+        assert sarili.bind_tools([]) is not None
