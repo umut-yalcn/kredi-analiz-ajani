@@ -46,6 +46,24 @@ class AskResponse(BaseModel):
     denetim_kaydi: list[dict[str, Any]]
     adim_sayisi: int
 
+    # Bu uc alan modelde tanimli degildi ve response_model tarafindan sessizce
+    # KIRPILIYORDU. Dayanak kontrolu (6. savunma katmani) HTTP tuketicisi icin
+    # makine-okunur degildi - yalnizca cevap metnindeki [DAYANAKSIZ CEVAP]
+    # onekiyle anlasilabiliyordu. Kardes projede response_model yok ve her sey
+    # donuyordu; iki API arasinda tutarsizlik vardi.
+    arac_ozeti: dict[str, int] = Field(
+        default_factory=dict,
+        description="Kac arac cagrisi basarili, kaci hata dondurdu.",
+    )
+    duzeltme_denemesi: int = Field(
+        0, description="Agent kac kez dayanaksiz cevap yazmaya kalkip geri gonderildi."
+    )
+    dayanaksiz_cevap: bool = Field(
+        False,
+        description="True ise cevabin arkasinda basarili bir arac ciktisi YOK; "
+        "icindeki sayilara guvenilmemelidir.",
+    )
+
 
 @app.on_event("startup")
 def _warmup() -> None:

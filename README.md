@@ -274,9 +274,10 @@ gizlilik kuralları gereği sistemde yer almamakta ve yetkiden bağımsız olara
 erişilememektedir.
 ```
 
-Ajan bu kolonları **denemedi bile** — `list_columns()` yalnızca analize açık
-kolonları döndürdüğü için varlıklarından haberi yok. Yetki iddiası da sonucu
-değiştirmiyor: koruma prompt'ta değil, kod yolunda.
+Ajan bu kolonları **denemedi bile.** Sistem prompt'u böyle kolonların var
+olduğunu ama kapalı olduğunu söylüyor; `list_columns()` ise adlarını hiç
+vermiyor. Yetki iddiası sonucu değiştirmiyor — ve asıl mesele şu: denese bile
+guard reddederdi, çünkü koruma prompt'ta değil kod yolunda.
 
 ---
 

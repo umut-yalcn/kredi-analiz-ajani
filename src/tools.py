@@ -172,14 +172,27 @@ def describe_column(column: str) -> str:
     counts = series.value_counts()
     suppressed = get_guard().check_group_sizes("describe_column", counts.to_dict())
     counts = counts.drop(index=suppressed, errors="ignore")
-    return _ok(
-        {
-            "kolon": column,
-            "satir_sayisi": int(series.count()),
-            "dagilim": {str(k): int(v) for k, v in counts.items()},
-            "bastirilan_grup_sayisi": len(suppressed),
-        }
-    )
+
+    # Bastirma yalnizca grubu GIZLEDIGINDE ise yarar; boyutunu da gizlemeli.
+    # Onceden hem toplam satir sayisi hem de bastirilmis dagilim donuyordu;
+    # ikisinin farki gizlenen grubun KESIN buyuklugunu veriyordu. Toplam yerine
+    # gorunen gruplarin toplamini donduruyoruz.
+    gorunen = int(counts.sum())
+    cikti: dict[str, Any] = {
+        "kolon": column,
+        "gorunen_satir_sayisi": gorunen,
+        "dagilim": {str(k): int(v) for k, v in counts.items()},
+        "bastirilan_grup_sayisi": len(suppressed),
+    }
+    if suppressed:
+        cikti["not"] = (
+            f"{len(suppressed)} grup k<{K_ANONYMITY_THRESHOLD} nedeniyle bastirildi. "
+            "Toplam satir sayisi bilerek verilmiyor: gorunen toplamla farki, "
+            "gizlenen grubun kesin buyuklugunu ele verirdi."
+        )
+    else:
+        cikti["satir_sayisi"] = int(series.count())
+    return _ok(cikti)
 
 
 @tool
