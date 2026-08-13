@@ -42,10 +42,12 @@ class GuardViolation(Exception):
 #: SINIRI: tek surec icinde gecerlidir. Birden fazla uvicorn worker'i ya da
 #: yeniden baslatma bu korumayi sifirlar. Gercek bir kurulumda sorgu denetimi
 #: kalici bir depoda ve kullanici/oturum bazinda tutulmalidir.
-_SORGU_GECMISI: dict[str, list[int]] = {}
+_SORGU_GECMISI: dict[str, set[int]] = {}
 _GECMIS_KILIDI = threading.Lock()
 
-#: Kolon basina saklanan en fazla sorgu boyutu. Sinirsiz buyumeyi engeller.
+#: Kolon basina saklanan en fazla FARKLI sorgu boyutu. Sinirsiz buyumeyi
+#: engeller. Kapasite dolunca yeni kayit eklenmez ama eskiler SILINMEZ -
+#: eskiyi silmek savunmayi taskinla asilabilir kilardi.
 GECMIS_SINIRI = 200
 
 
@@ -140,32 +142,37 @@ class Guard:
         olculdu - ayni degeri yine cikardi).
         """
         with _GECMIS_KILIDI:
-            oncekiler = _SORGU_GECMISI.setdefault(key, [])
-            catisma = next(
-                (o for o in oncekiler if 0 < abs(n_rows - o) < K_ANONYMITY_THRESHOLD),
-                None,
+            oncekiler = _SORGU_GECMISI.setdefault(key, set())
+            catisma = any(
+                0 < abs(n_rows - o) < K_ANONYMITY_THRESHOLD for o in oncekiler
             )
-            if catisma is None:
-                oncekiler.append(n_rows)
-                if len(oncekiler) > GECMIS_SINIRI:
-                    del oncekiler[: len(oncekiler) - GECMIS_SINIRI]
+            if not catisma:
+                # Kapasite dolduysa YENI kayit eklenmez ama eskiler DURUR.
+                # Eskiyi silmek fail-open olurdu: saldirgan zararsiz bir sorguyu
+                # tekrarlayip koruyucu kaydi gecmisten dusurebilirdi. Kume
+                # kullanmak ayrica ayni sorgunun tekrarini bedelsiz kiliyor -
+                # taskin artik gecmisi buyutmuyor.
+                if len(oncekiler) < GECMIS_SINIRI:
+                    oncekiler.add(n_rows)
 
-        if catisma is None:
+        if not catisma:
             return
 
-        fark = abs(n_rows - catisma)
+        # Ret gerekcesi ONCEKI sorgunun satir sayisini ACIKLAMAZ. Aciklasaydi,
+        # baska bir kullanicinin sorgu boyutu bu mesaj uzerinden ogrenilebilirdi
+        # - savunmanin kendisi bir yan kanal olurdu.
         self._record(
             action,
             (key,),
             False,
-            f"Fark alma riski: onceki sorgu {catisma} satir, bu sorgu {n_rows} "
-            f"satir; fark {fark} < {K_ANONYMITY_THRESHOLD}",
+            f"Fark alma riski: '{key}' uzerinde daha onceki bir sorguyla arasindaki "
+            f"fark {K_ANONYMITY_THRESHOLD} satirdan az",
         )
         raise GuardViolation(
-            f"Bu sorgu, ayni kolon uzerinde daha once calistirilan bir sorgudan "
-            f"yalnizca {fark} satir farkli ({catisma} -> {n_rows}). Iki sonucun "
-            f"farki {K_ANONYMITY_THRESHOLD} kisiden az bir gruba isaret ediyor ve "
-            "bu gruptaki kisilerin degerleri cikarilabilir. Esigi belirgin sekilde "
+            f"Bu sorgu, ayni kolon uzerinde daha once calistirilan bir sorguya cok "
+            f"yakin bir sonuc kumesi donduruyor. Iki sonucun farki "
+            f"{K_ANONYMITY_THRESHOLD} kisiden az bir gruba isaret ediyor ve o "
+            "gruptaki kisilerin degerleri cikarilabilir. Esigi belirgin sekilde "
             "degistir ya da farkli bir analiz kur."
         )
 
@@ -180,81 +187,42 @@ class Guard:
         ("EMAIL", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b")),
     )
 
-    # Bir sayiyi toplulastirma sonucu yapan birimler. TCKN veya telefon
-    # numarasi bu kelimelerle nitelenmez; toplam tutar, adet ve sure nitelenir.
-    _OLCU_BIRIMI = re.compile(
-        r"^\s*(?:tl|try|₺|lira|adet|kayit|kayıt|basvuru|başvuru|kisi|kişi|musteri|"
-        r"müsteri|müşteri|satir|satır|gun|gün|ay|yil|yıl|puan|krd)\b",
-        re.IGNORECASE,
-    )
-
-    # Sayiyi bir olcume baglayan onek. "toplam 12345678901" bir kimlik numarasi
-    # degil, bir toplamdir.
-    _OLCU_ONEKI = re.compile(
-        r"(?:toplam|ortalama|genel|medyan|std|sapma|adet|say[iı]s[iı]|"
-        r"tutar[iı]?|hacim|bakiye|limit|portfoy|portföy)\s*[:=]?\s*$",
-        re.IGNORECASE,
-    )
-
-    # Sayiyi acikca KIMLIK olarak niteleyen onek. Boyle bir etiket varsa
-    # arkadaki birim kelimesi ne olursa olsun maskeleme yapilir.
-    # Onceden yalnizca eslesmenin ARKASINA bakiliyordu; "TCKN: 12345678901 TL"
-    # ya da "Musteri TCKN 12345678901 kisi" maskelenmeden geciyordu.
-    _KIMLIK_ONEKI = re.compile(
-        r"(?:tckn|t\.?c\.?\s*kimlik|kimlik\s*(?:no|numaras[iı])?|vatandaslik|"
-        r"tel(?:efon)?|gsm|cep|numaras[iı])\s*[:=#]?\s*$",
-        re.IGNORECASE,
-    )
-
-    def _olcum_mu(self, text: str, bas: int, son: int) -> bool:
-        """Eslesen sayi, bir toplulastirma sonucu gibi mi duruyor?
-
-        TCKN ve telefon desenleri buyuk tam sayilarla kacinilmaz olarak cakisir:
-        11 haneli her sayi TCKN'ye, 5 ile baslayan 10 haneli her sayi telefona
-        benzer. Bir kredi burosunda toplam portfoy buyuklugu rahatlikla bu
-        aralia girer. Deseni gevsetmek yerine - ki bu gercek PII'yi kacirmak
-        demek olurdu - eslesmenin cevresine bakiyoruz.
-        """
-        onceki = text[max(0, bas - 32) : bas]
-
-        # Acik kimlik etiketi her seyi gecersiz kilar: "TCKN: ... TL" bir
-        # toplam degil, etiketlenmis bir kimlik numarasidir.
-        if self._KIMLIK_ONEKI.search(onceki):
-            return False
-
-        return bool(
-            self._OLCU_BIRIMI.match(text[son : son + 24])
-            or self._OLCU_ONEKI.search(onceki[-24:])
-        )
+    # BAGLAM SEZGISELI KALDIRILDI.
+    #
+    # Onceden, eslesmenin cevresinde "TL/adet/kisi" gibi bir birim ya da
+    # "toplam/ortalama" gibi bir onek varsa maskeleme atlaniyordu; amac mesru
+    # buyuk sayilarin maskelenmesini onlemekti. Bagimsiz denetimde bunun
+    # atlatilabildigi gosterildi:
+    #
+    #     "TCKN degeri: 12345678901 TL"      -> maskelenmiyordu
+    #     "Telefon degeri: 05551234567 adet" -> maskelenmiyordu
+    #
+    # Etiket listesini genisletmek cozum degil: sezgisel oldugu surece bir
+    # sonraki ifade yine disarida kalir. Modelin ya da bir prompt enjeksiyonunun
+    # sayinin sonuna bir birim eklemesi yetiyor.
+    #
+    # Bu KATMAN son savunma hatti. Burada yanlis pozitif (mesru bir toplamin
+    # maskelenmesi) gorunur ve zararsizdir; yanlis negatif (bir TCKN'nin
+    # sizmasi) gorunmez ve yikicidir. O yuzden desen eslesen her sayi
+    # KOSULSUZ maskeleniyor.
+    #
+    # Bedeli: 11 haneli ya da 5 ile baslayan 10 haneli mesru bir toplam da
+    # maskelenir. Bu veri setinde toplamlar o buyukluge ulasmiyor; ulasan bir
+    # kurulumda toplamlar arac ciktisindaki YAPILANDIRILMIS alanlardan
+    # okunmali, serbest metinden degil.
 
     def mask(self, text: str) -> str:
         """Modelin urettigi metinde PII deseni kalmissa maskeler.
 
         Kolon izni katmani zaten bu veriyi agent'a hic vermiyor; bu, o katman
-        atlatilirsa devreye giren ikinci savunma hatti.
+        atlatilirsa devreye giren son savunma hatti. Kosulsuz maskeler -
+        gerekcesi icin yukaridaki nota bak.
         """
         masked = text
         for label, pattern in self._PII_PATTERNS:
-            atlanan = 0
-
-            def _degistir(m: re.Match[str], _label: str = label) -> str:
-                nonlocal atlanan
-                if _label != "EMAIL" and self._olcum_mu(m.string, m.start(), m.end()):
-                    atlanan += 1
-                    return m.group(0)
-                return f"[{_label}_MASKELENDI]"
-
-            masked, n = pattern.subn(_degistir, masked)
-            maskelenen = n - atlanan
-            if maskelenen:
-                self._record("mask_output", (), True, f"{maskelenen} adet {label} maskelendi")
-            if atlanan:
-                self._record(
-                    "mask_output",
-                    (),
-                    True,
-                    f"{atlanan} adet {label} benzeri sayi olcum baglaminda oldugu icin korundu",
-                )
+            masked, n = pattern.subn(f"[{label}_MASKELENDI]", masked)
+            if n:
+                self._record("mask_output", (), True, f"{n} adet {label} maskelendi")
         return masked
 
     # --- 4. Denetim kaydi ------------------------------------------------

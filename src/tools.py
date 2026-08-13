@@ -23,7 +23,6 @@ from .schema import (
     BY_NAME,
     CATEGORICAL_COLUMNS,
     NUMERIC_COLUMNS,
-    PII_COLUMNS,
 )
 
 # Istek boyunca yasayan guard. Modul seviyesinde tek bir global kullanmak yerine
@@ -56,8 +55,11 @@ def load_analysis_frame() -> pd.DataFrame:
     bellegine girmez. Agent yanlis bir sorgu uretse bile ortada sizdiracak
     veri yoktur.
     """
-    df = pd.read_csv(DATA_PATH)
-    return df.drop(columns=[c for c in PII_COLUMNS if c in df.columns])
+    # usecols ile okunuyor: PII kolonlari DISK'ten hic okunmuyor. Onceden once
+    # 17 kolonun tamamı bir DataFrame'e yukleniyor sonra drop ediliyordu - yani
+    # "analiz katmaninin belleginde o veri hic bulunmaz" iddiasi teknik olarak
+    # yanlisti; PII en azindan fonksiyon donene kadar bellekteydi.
+    return pd.read_csv(DATA_PATH, usecols=list(ANALYZABLE_COLUMNS))
 
 
 def _json_guvenli(deger: Any) -> Any:

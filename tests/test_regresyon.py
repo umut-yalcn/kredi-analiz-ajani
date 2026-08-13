@@ -207,69 +207,41 @@ class TestUcDegerBastirma:
         assert r["min"] == pytest.approx(float(en_dusuk))
 
 
-class TestMaskelemeBaglami:
-    """Bulgu 5: 11 haneli her sayi TCKN, 5 ile baslayan 10 haneli her sayi
-    telefon sayiliyordu. Bir kredi burosunda toplam portfoy buyuklugu bu
-    araliga rahatlikla girer."""
+class TestMaskelemeKosulsuz:
+    """Baglam sezgiseli KALDIRILDI - bagimsiz denetimde atlatilabildigi gosterildi.
+
+        "TCKN degeri: 12345678901 TL"      -> maskelenmiyordu
+        "Telefon degeri: 05551234567 adet" -> maskelenmiyordu
+
+    Etiket listesini genisletmek cozum degil; sezgisel oldugu surece bir sonraki
+    ifade yine disarida kalir. Son savunma hattinda yanlis pozitif gorunur ve
+    zararsiz, yanlis negatif gorunmez ve yikicidir.
+    """
 
     @pytest.mark.parametrize(
         "metin",
         [
-            "Portfoy buyuklugu 12345678901 TL",
-            "Toplam 5123456789 kayit",
+            "TCKN degeri: 12345678901 TL",
+            "Telefon degeri: 05551234567 adet",
+            "Musteri no 12345678901 kisi",
+            "TCKN: 12345678901 TL",
+            "12345678901 adet",
             "toplam: 12345678901",
-            "Musteri sayisi 12345678901",
-            "Ortalama tutar 5123456789 TL",
+            "Toplam portfoy 12345678901 TL",
+            "+905551234567",
+            "iletisim: a@b.com",
         ],
     )
-    def test_olcum_baglamindaki_sayilar_maskelenmez(self, metin):
-        assert Guard().mask(metin) == metin
-
-    @pytest.mark.parametrize(
-        "metin",
-        [
-            "TCKN: 12345678901",
-            "Kimlik no 12345678901",
-            "Tel: 05551234567",
-            "iletisim: kullanici@ornek.com",
-        ],
-    )
-    def test_gercek_pii_hala_maskelenir(self, metin):
+    def test_desen_eslesen_her_sey_maskelenir(self, metin):
         assert "MASKELENDI" in Guard().mask(metin)
 
     @pytest.mark.parametrize(
         "metin",
-        [
-            "+905551234567",
-            "Tel: +905551234567",
-            "tel:+905551234567.",
-            "05551234567",
-            "5551234567",
-        ],
+        ["Ortalama talep 125000 TL", "Kredi skoru 1850", "2026", "1234567890"],
     )
-    def test_telefon_tum_bicimleriyle_maskelenir(self, metin):
-        """Regresyon: desen `\\b(?:\\+90|0)?5[0-9]{9}\\b` seklindeydi.
-
-        Bastaki \\b, dizgenin basinda "+" onunde sinir bulamadigi icin
-        "+905551234567" HIC eslesmiyordu. Uluslararasi formattaki numara
-        maskeleme katmanindan sessizce siziyordu.
-        """
-        assert "TELEFON_MASKELENDI" in Guard().mask(metin)
-
-    @pytest.mark.parametrize("metin", ["1234567890", "123456789012", "2026", "905551234567"])
-    def test_telefon_olmayan_sayilar_maskelenmez(self, metin):
-        """10 hane, 12 hane ve yil gibi degerler telefon sayilmaz.
-
-        Not: "15551234567" bilerek disarida - 11 haneli ve sifirla baslamadigi
-        icin TCKN desenine uyar ve maskelenmesi DOGRUDUR.
-        """
+    def test_desen_eslesmeyen_sayilar_dokunulmaz(self, metin):
         assert Guard().mask(metin) == metin
 
-    def test_korunan_sayi_da_denetime_yazilir(self):
-        """Maskelenmeme karari da bir karardir; izlenebilir olmali."""
-        g = Guard()
-        g.mask("Portfoy buyuklugu 12345678901 TL")
-        assert any("korundu" in e["reason"] for e in g.audit_trail())
 
 
 class TestDayanakKontrolu:
@@ -381,6 +353,45 @@ class TestFarkAlmaSaldirisi:
         assert "hata" not in a and "hata" not in b
         assert a["gozlemlenen_satir"] != b["gozlemlenen_satir"]
 
+    def test_gecmis_taskini_savunmayi_asamaz(self):
+        """Bagimsiz denetim: ayni zararsiz sorgu tekrarlanarak gecmis doldurulup
+        koruyucu kayit disari itilebiliyordu (liste + kirpma). Kume ve
+        fail-closed kapasite ile kapatildi.
+        """
+        from src.guard import GECMIS_SINIRI, _SORGU_GECMISI, gecmisi_temizle
+
+        gecmisi_temizle()
+        set_guard(Guard())
+        ilk = _c(segment_stats, column="kredi_skoru", operator="<", value=1893.0,
+                 metric="aylik_gelir")
+        assert "hata" not in ilk
+
+        for _ in range(GECMIS_SINIRI + 50):
+            _c(segment_stats, column="kredi_skoru", operator="<", value=942.0,
+               metric="aylik_gelir")
+
+        gecmis = _SORGU_GECMISI["kredi_skoru|aylik_gelir"]
+        assert ilk["gozlemlenen_satir"] in gecmis, "koruyucu kayit gecmisten dusmus"
+        assert len(gecmis) <= GECMIS_SINIRI
+
+        sonra = _c(segment_stats, column="kredi_skoru", operator="<=", value=1893.0,
+                   metric="aylik_gelir")
+        assert "hata" in sonra, "taskin sonrasi saldiri gecti"
+
+    def test_ret_mesaji_onceki_sorgu_boyutunu_sizdirmaz(self):
+        """Ret gerekcesi baska bir kullanicinin sorgu boyutunu aciklamamali;
+        savunmanin kendisi yan kanal olmamali."""
+        from src.guard import gecmisi_temizle
+
+        gecmisi_temizle()
+        set_guard(Guard())
+        ilk = _c(segment_stats, column="kredi_skoru", operator="<", value=1893.0,
+                 metric="aylik_gelir")
+        red = _c(segment_stats, column="kredi_skoru", operator="<=", value=1893.0,
+                 metric="aylik_gelir")
+        assert "hata" in red
+        assert str(ilk["gozlemlenen_satir"]) not in red["hata"]
+
     def test_farkli_kolon_ciftleri_birbirini_etkilemez(self):
         set_guard(Guard())
         a = _c(segment_stats, column="kredi_skoru", operator="<", value=1400,
@@ -428,58 +439,16 @@ class TestKategorikKolonCokmesi:
         assert "hata" not in r
 
 
-class TestMaskelemeKimlikOneki:
-    """Bagimsiz denetimde bulundu: acik PII etiketi olan sayilar sizabiliyordu.
 
-    'TCKN: 12345678901 TL' ve 'Musteri TCKN 12345678901 kisi' maskelenmiyordu -
-    cunku sezgisel yalnizca eslesmenin ARKASINDAKI birim kelimesine bakiyordu.
-    """
+class TestPiiBellegeGirmez:
+    """Bagimsiz denetim: pd.read_csv once 17 kolonun TAMAMINI yukluyor, sonra
+    drop ediyordu. 'Analiz katmaninin belleginde o veri hic bulunmaz' iddiasi
+    teknik olarak yanlisti."""
 
-    @pytest.mark.parametrize(
-        "metin",
-        [
-            "Musteri TCKN 12345678901 kisi",
-            "TCKN: 12345678901 TL",
-            "Kimlik no 12345678901 kisi",
-            "Iletisim numarasi 05551234567 kayit",
-            "tel: 05551234567 gun",
-        ],
-    )
-    def test_kimlik_etiketli_sayi_her_zaman_maskelenir(self, metin):
-        assert "MASKELENDI" in Guard().mask(metin)
+    def test_yalnizca_analize_acik_kolonlar_okunur(self):
+        from src.schema import ANALYZABLE_COLUMNS, PII_COLUMNS
 
-    @pytest.mark.parametrize(
-        "metin",
-        [
-            "Toplam portfoy 12345678901 TL",
-            "toplam: 12345678901",
-            "Ortalama 5123456789 kayit",
-            "12345678901 adet",
-        ],
-    )
-    def test_olcum_baglamindaki_sayilar_hala_korunur(self, metin):
-        assert Guard().mask(metin) == metin
-
-    def test_ayri_isteklerde_de_engellenir(self):
-        """Gecmis Guard ornegi basina tutulsaydi saldirgan iki sorguyu iki ayri
-        istege bolerek savunmayi atlardi. Olculdu: ayni degeri yine cikariyordu.
-        """
-        set_guard(Guard())
-        r1 = _c(segment_stats, column="kredi_skoru", operator="<", value=1893.0,
-                metric="aylik_gelir")
-        set_guard(Guard())  # yeni istek, yeni Guard
-        r2 = _c(segment_stats, column="kredi_skoru", operator="<=", value=1893.0,
-                metric="aylik_gelir")
-        assert "hata" not in r1
-        assert "hata" in r2, "ayri istekte saldiri gecti"
-
-    def test_gecmis_sinirsiz_buyumez(self):
-        from src.guard import GECMIS_SINIRI, _SORGU_GECMISI
-
-        gecmisi_temizle()
-        set_guard(Guard())
-        for esik in range(600, 1900, 5):
-            _c(segment_stats, column="kredi_skoru", operator="<", value=float(esik),
-               metric="aylik_gelir")
-        for boyutlar in _SORGU_GECMISI.values():
-            assert len(boyutlar) <= GECMIS_SINIRI
+        load_analysis_frame.cache_clear()
+        df = load_analysis_frame()
+        assert set(df.columns) == set(ANALYZABLE_COLUMNS)
+        assert not [c for c in PII_COLUMNS if c in df.columns]

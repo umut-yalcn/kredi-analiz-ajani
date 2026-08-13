@@ -337,3 +337,44 @@ class TestLangChainHatalari:
                  "id": "1", "type": "tool_call"}])]}
         )
         assert isinstance(sonuc["messages"][-1], ToolMessage)
+
+
+class TestAdimSiniri:
+    """Bagimsiz denetim: adim siniri yalnizca modele SOYLENIYORDU, graf
+    tarafindan uygulanmiyordu. Model dinlemezse arac calistirmaya devam
+    ediliyordu; olculdu: sinir 12 iken 40 arac cagrisi yapildi.
+    """
+
+    def _inatci_model(self, arac_adi, adet=60):
+        from langchain_core.messages import AIMessage
+
+        class Sahte:
+            def __init__(s):
+                s.n = 0
+
+            def bind_tools(s, _):
+                return s
+
+            def with_retry(s, *a, **k):
+                return s
+
+            def invoke(s, m, *a, **k):
+                s.n += 1
+                if s.n <= adet:
+                    return AIMessage(content="", tool_calls=[
+                        {"name": arac_adi, "args": {}, "id": str(s.n), "type": "tool_call"}])
+                return AIMessage(content="son cevap")
+
+        return Sahte()
+
+    def test_sinir_asilinca_graf_durur(self, monkeypatch):
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from src import agent as A
+
+        monkeypatch.setattr(A, "get_llm", lambda *a, **k: self._inatci_model("list_columns"))
+        sonuc = A.build_agent().invoke(
+            {"messages": [HumanMessage(content="x")], "duzeltme_denemesi": 0}
+        )
+        cagri = sum(1 for m in sonuc["messages"] if isinstance(m, AIMessage) and m.tool_calls)
+        assert cagri <= A.MAX_STEPS * 2 + 4, f"{cagri} cagri yapildi, sinir uygulanmadi"

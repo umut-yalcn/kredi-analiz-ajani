@@ -185,7 +185,16 @@ def build_agent():
         }
 
     def yonlendir(state: AnalizDurumu) -> str:
-        son = state["messages"][-1]
+        mesajlar = state["messages"]
+        son = mesajlar[-1]
+
+        # Adim siniri BURADA uygulanir. Onceden yalnizca modele "yeni arac
+        # cagirma" deniyordu; model dinlemezse graf arac calistirmaya devam
+        # ediyordu. Olculdu: MAX_STEPS=12 iken 40 arac cagrisi yapildi.
+        # Sinir artik dilek degil, yonlendirme karari.
+        if len(mesajlar) > MAX_STEPS * 2 + 4:
+            return END
+
         if getattr(son, "tool_calls", None):
             return "tools"
 
