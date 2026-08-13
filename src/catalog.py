@@ -28,8 +28,8 @@ COLLECTION_NAME = "veri_sozlugu"
 #: Embedding cagrisi ag kaynakli gecici hatalarla dusebiliyor (gozlemlenen:
 #: "SSL: INVALID_SESSION_ID"). Tek bir gecici hata tum agent kosumunu
 #: dusurmemeli - ozellikle canli demoda.
-EMBEDDING_DENEME = 3
-EMBEDDING_BEKLEME = 1.5
+EMBEDDING_DENEME = 4
+EMBEDDING_BEKLEME = 2.0
 
 
 class GoogleEmbeddingFunction:
@@ -59,7 +59,9 @@ class GoogleEmbeddingFunction:
             except Exception as hata:  # saglayici hatalarini tek tek ayirmiyoruz
                 son_hata = hata
                 if deneme < EMBEDDING_DENEME - 1:
-                    time.sleep(EMBEDDING_BEKLEME * (deneme + 1))
+                    # Ustel geri cekilme: gozlemlenen SSL kesintileri
+                    # ~30 saniyede toparliyor, dogrusal bekleme yetmiyor.
+                    time.sleep(EMBEDDING_BEKLEME * (2 ** deneme))
         raise RuntimeError(
             f"Embedding {EMBEDDING_DENEME} denemede alinamadi: {son_hata}"
         ) from son_hata

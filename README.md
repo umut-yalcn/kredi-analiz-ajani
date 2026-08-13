@@ -262,6 +262,22 @@ Adayları tek tek function calling testinden geçirir ve çalışanı önerir. V
 `gemini-3.6-flash`; ajan hangi aracı ne zaman çağıracağına kendi karar verdiği
 için Flash-Lite yerine Flash tercih edildi — araç seçimi muhakeme işi.
 
+### Ücretsiz katman limitleri
+
+Ücretsiz katmanda iki ayrı sınır var ve ikincisi kritik:
+
+| Sınır | Değer | Etkisi |
+|---|---|---|
+| Dakikada istek | 5 | Ajan tek soruda 5-10 model çağrısı yapar → sorgu ortasında 429 |
+| **Günde istek** | **20** | **Günde yaklaşık 2-3 soru** |
+
+Dakikalık sınır için kodda hız sınırlayıcı var (`ISTEK_HIZI_RPM`, varsayılan 4;
+ücretli katmanda `0` ile kapatılır). **Günlük sınır kodla çözülemez.**
+
+Kotalar model başına ayrıdır. `gemini-3.6-flash` tükendiğinde `.env` içinde
+`LLM_MODEL=gemini-3.5-flash` yazmak yeterli — `GOOGLE_FALLBACK_CHAIN` içindeki
+alternatifler ayrı kotalarla çalışır. Yoğun demo öncesi bunu bilerek planla.
+
 ### Geliştirme ortamı ve veri gizliliği
 
 Geliştirme, Google AI Studio'nun ücretsiz katmanında yapıldı. Bu katmanda
