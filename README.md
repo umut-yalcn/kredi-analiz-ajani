@@ -84,8 +84,16 @@ tek bir ret bile yoktu.
 
 Bu yüzden guard artık aynı kolon üzerinde dönen sonuç kümesi boyutlarını
 hatırlıyor ve yeni sorgu öncekilerden **k'dan az farklıysa** reddediyor
-(`check_overlap`). Tam bir sorgu denetimi değil — aynı süreç içinde çalışıyor —
-ama saldırıyı kurmayı engelliyor ve her reddi denetim kaydına yazıyor.
+(`check_overlap`). Geçmiş **süreç genelinde** tutuluyor, istek başına değil —
+ilk düzeltme yalnızca istek içinde koruyordu ve saldırgan iki sorguyu iki ayrı
+isteğe bölerek aynı değeri yine çıkarabiliyordu. Bu da ölçüldü.
+
+Meşru analiz engellenmiyor: kademeli eşik taramaları, risk merdivenleri ve yaş
+grubu kırılımları test edildi, hiçbiri bloklanmıyor.
+
+**Sınırı açıkça söyleyelim:** koruma tek süreç içinde geçerli. Birden fazla
+uvicorn worker'ı ya da yeniden başlatma geçmişi sıfırlar. Gerçek bir kurulumda
+sorgu denetimi kalıcı bir depoda, kullanıcı/oturum bazında tutulmalıdır.
 
 **4. Çıktı maskeleme.** Üretilen metinde TCKN, telefon veya e-posta deseni
 kalırsa maskelenir. Üstteki katmanlar aşılırsa devreye giren son hat.
@@ -166,7 +174,7 @@ döner. Sistemin ne yaptığı ve neyi neden reddettiği izlenebilir.
 Koruma katmanını doğrulamak için **API anahtarı gerekmez.** İki yol var:
 
 ```bash
-pytest tests/ -q              # 112 passed
+pytest tests/ -q              # 114 passed
 python scripts/demo_guard.py  # korumaları canlı gösterir
 ```
 

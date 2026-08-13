@@ -16,6 +16,7 @@ uygulanir:
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -29,6 +30,29 @@ K_ANONYMITY_THRESHOLD = 20
 
 class GuardViolation(Exception):
     """Guard bir istegi reddettiginde firlatilir. Agent bunu hata olarak gorur ve plan degistirir."""
+
+
+#: Fark alma savunmasi icin SUREC GENELINDE paylasilan sorgu gecmisi.
+#:
+#: Guard nesnesi istek basina yasiyor; gecmis yalnizca orada tutulsaydi saldirgan
+#: iki sorguyu iki AYRI istege bolerek savunmayi tamamen atlardi (olculdu: ayni
+#: istekte engellenen saldiri, ayri isteklerde 31499.88 degerini yine cikardi).
+#: Bu yuzden gecmis modul duzeyinde ve kilitli tutuluyor.
+#:
+#: SINIRI: tek surec icinde gecerlidir. Birden fazla uvicorn worker'i ya da
+#: yeniden baslatma bu korumayi sifirlar. Gercek bir kurulumda sorgu denetimi
+#: kalici bir depoda ve kullanici/oturum bazinda tutulmalidir.
+_SORGU_GECMISI: dict[str, list[int]] = {}
+_GECMIS_KILIDI = threading.Lock()
+
+#: Kolon basina saklanan en fazla sorgu boyutu. Sinirsiz buyumeyi engeller.
+GECMIS_SINIRI = 200
+
+
+def gecmisi_temizle() -> None:
+    """Surec genelindeki sorgu gecmisini bosaltir. Testler icin."""
+    with _GECMIS_KILIDI:
+        _SORGU_GECMISI.clear()
 
 
 @dataclass
@@ -45,10 +69,6 @@ class Guard:
     """Tek bir istek boyunca yasayan guvenlik baglami."""
 
     audit_log: list[AuditEntry] = field(default_factory=list)
-
-    #: Kolon basina daha once dondurulen sonuc kumesi boyutlari.
-    #: Fark alma savunmasi bunu kullanir; bkz. check_overlap.
-    _gecmis: dict[str, list[int]] = field(default_factory=dict, repr=False)
 
     # --- 1. Kolon izni ---------------------------------------------------
 
@@ -113,29 +133,41 @@ class Guard:
 
         Bu yuzden ayni kolon uzerinde daha once dondurulen sonuc kumesi
         boyutlarini hatirliyoruz; yeni sorgu oncekilerden k'dan az farkliysa
-        reddediliyor. Tam bir sorgu denetimi degil - ayni surec icinde
-        calisiyor - ama saldiriyi tek istekte kurmayi imkansiz kiliyor ve her
-        reddi denetim kaydina yaziyor.
+        reddediliyor.
+
+        Gecmis SUREC GENELINDE tutuluyor, Guard ornegi basina degil: aksi halde
+        saldirgan iki sorguyu iki ayri istege bolerek savunmayi atlardi (bu da
+        olculdu - ayni degeri yine cikardi).
         """
-        oncekiler = self._gecmis.setdefault(key, [])
-        for onceki in oncekiler:
-            fark = abs(n_rows - onceki)
-            if 0 < fark < K_ANONYMITY_THRESHOLD:
-                self._record(
-                    action,
-                    (key,),
-                    False,
-                    f"Fark alma riski: onceki sorgu {onceki} satir, bu sorgu {n_rows} "
-                    f"satir; fark {fark} < {K_ANONYMITY_THRESHOLD}",
-                )
-                raise GuardViolation(
-                    f"Bu sorgu, ayni kolon uzerinde daha once calistirdigin bir sorgudan "
-                    f"yalnizca {fark} satir farkli ({onceki} -> {n_rows}). Iki sonucun "
-                    f"farki {K_ANONYMITY_THRESHOLD} kisiden az bir gruba isaret ediyor ve "
-                    "bu gruptaki kisilerin degerleri cikarilabilir. Esigi belirgin sekilde "
-                    "degistir ya da farkli bir analiz kur."
-                )
-        oncekiler.append(n_rows)
+        with _GECMIS_KILIDI:
+            oncekiler = _SORGU_GECMISI.setdefault(key, [])
+            catisma = next(
+                (o for o in oncekiler if 0 < abs(n_rows - o) < K_ANONYMITY_THRESHOLD),
+                None,
+            )
+            if catisma is None:
+                oncekiler.append(n_rows)
+                if len(oncekiler) > GECMIS_SINIRI:
+                    del oncekiler[: len(oncekiler) - GECMIS_SINIRI]
+
+        if catisma is None:
+            return
+
+        fark = abs(n_rows - catisma)
+        self._record(
+            action,
+            (key,),
+            False,
+            f"Fark alma riski: onceki sorgu {catisma} satir, bu sorgu {n_rows} "
+            f"satir; fark {fark} < {K_ANONYMITY_THRESHOLD}",
+        )
+        raise GuardViolation(
+            f"Bu sorgu, ayni kolon uzerinde daha once calistirilan bir sorgudan "
+            f"yalnizca {fark} satir farkli ({catisma} -> {n_rows}). Iki sonucun "
+            f"farki {K_ANONYMITY_THRESHOLD} kisiden az bir gruba isaret ediyor ve "
+            "bu gruptaki kisilerin degerleri cikarilabilir. Esigi belirgin sekilde "
+            "degistir ya da farkli bir analiz kur."
+        )
 
     # --- 3. PII maskeleme ------------------------------------------------
 

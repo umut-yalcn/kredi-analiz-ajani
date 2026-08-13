@@ -14,7 +14,7 @@ import threading
 import pytest
 
 from src.config import DATA_PATH
-from src.guard import Guard, K_ANONYMITY_THRESHOLD
+from src.guard import Guard, K_ANONYMITY_THRESHOLD, gecmisi_temizle
 from src.tools import (
     group_aggregate,
     correlation,
@@ -28,6 +28,8 @@ from src.tools import (
 
 @pytest.fixture(autouse=True)
 def temiz_guard():
+    # Fark alma gecmisi surec genelinde; testler birbirini etkilemesin.
+    gecmisi_temizle()
     set_guard(Guard())
     yield
 
@@ -457,3 +459,27 @@ class TestMaskelemeKimlikOneki:
     )
     def test_olcum_baglamindaki_sayilar_hala_korunur(self, metin):
         assert Guard().mask(metin) == metin
+
+    def test_ayri_isteklerde_de_engellenir(self):
+        """Gecmis Guard ornegi basina tutulsaydi saldirgan iki sorguyu iki ayri
+        istege bolerek savunmayi atlardi. Olculdu: ayni degeri yine cikariyordu.
+        """
+        set_guard(Guard())
+        r1 = _c(segment_stats, column="kredi_skoru", operator="<", value=1893.0,
+                metric="aylik_gelir")
+        set_guard(Guard())  # yeni istek, yeni Guard
+        r2 = _c(segment_stats, column="kredi_skoru", operator="<=", value=1893.0,
+                metric="aylik_gelir")
+        assert "hata" not in r1
+        assert "hata" in r2, "ayri istekte saldiri gecti"
+
+    def test_gecmis_sinirsiz_buyumez(self):
+        from src.guard import GECMIS_SINIRI, _SORGU_GECMISI
+
+        gecmisi_temizle()
+        set_guard(Guard())
+        for esik in range(600, 1900, 5):
+            _c(segment_stats, column="kredi_skoru", operator="<", value=float(esik),
+               metric="aylik_gelir")
+        for boyutlar in _SORGU_GECMISI.values():
+            assert len(boyutlar) <= GECMIS_SINIRI
