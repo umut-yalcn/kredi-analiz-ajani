@@ -345,6 +345,18 @@ def correlation(column_a: str, column_b: str) -> str:
                 }
             )
 
+    # Ayni kolon iki kez verilirse df[[a, a]] iki AYNI ADLI kolon uretir; bu
+    # durumda cift[a] Series degil DataFrame doner ve .corr() "truth value of
+    # a DataFrame is ambiguous" ile coker. Zaten anlamsiz bir sorgu - erkenden
+    # ve acikca reddediyoruz.
+    if column_a == column_b:
+        return _ok(
+            {
+                "hata": f"'{column_a}' kolonunun kendisiyle korelasyonu tanimi geregi "
+                "1.0'dir; analitik bir bilgi tasimaz. Iki FARKLI sayisal kolon sec."
+            }
+        )
+
     df = load_analysis_frame()
 
     # Korelasyon yalnizca IKI kolonun da gozlemlendigi satirlar uzerinden

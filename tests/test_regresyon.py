@@ -153,6 +153,23 @@ class TestKorelasyonSatirSayisi:
         r = _c(correlation, column_a="kredi_skoru", column_b="temerrut")
         assert "satir_sayisi" not in r, "belirsiz 'satir_sayisi' alani geri gelmis"
 
+    @pytest.mark.parametrize("kolon", ["kredi_skoru", "yas", "temerrut"])
+    def test_ayni_kolon_cokme_yerine_hata_dondurur(self, kolon):
+        """Regresyon: correlation(x, x) ValueError ile cokuyordu.
+
+        df[[a, a]] iki AYNI ADLI kolon uretir; cift[a] o zaman Series degil
+        DataFrame doner ve .corr() 'truth value of a DataFrame is ambiguous'
+        ile patlar. Anlamsiz bir sorgu, ama coken degil aciklayan bir cevap
+        vermeli - agent hatayi gorup plan degistirebilsin.
+        """
+        r = _c(correlation, column_a=kolon, column_b=kolon)
+        assert "hata" in r
+        assert "pearson_r" not in r
+
+    def test_farkli_kolonlar_hala_calisiyor(self):
+        r = _c(correlation, column_a="kredi_skoru", column_b="yas")
+        assert "pearson_r" in r
+
 
 class TestUcDegerBastirma:
     """Bulgu 4: sayisal ozetlerde min/max k esigine tabi degildi.
