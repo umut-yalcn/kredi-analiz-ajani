@@ -12,9 +12,11 @@ agent plan degistirir.
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
@@ -44,6 +46,11 @@ Veri erisimi hakkinda bilmen gerekenler:
   gerekceyle hata donduruyorsa filtreyi genislet.
 - Bir arac hata dondurdugunde bunu kullaniciya oldugu gibi aktarma; ne yapmaya
   calistigini ve neden yapamadigini kendi cumlelerinle acikla.
+- Bir arac "Bilinmeyen kolon" hatasi donduruyorsa kolon adini YANLIS yazmissindir.
+  list_columns ile dogru adi al ve TEKRAR CAGIR. Cevap uydurma.
+- Elinde basarili bir arac ciktisi YOKSA sayi veremezsin. Bu durumda tek dogru
+  cevap, soruyu neden yanitlayamadigini soylemektir. Tahmini bir sayi vermek,
+  cevap vermemekten cok daha kotudur.
 
 Cevap bicimi:
 - Once sonucu soyle. Bulgun ne ise ilk cumlede o olsun.
@@ -105,6 +112,39 @@ def _extract_text(content: Any) -> str:
     return str(content)
 
 
+DESTEKSIZ_CEVAP_UYARISI = (
+    "[DAYANAKSIZ CEVAP] Bu soruya hicbir arac cagrisi basarili sonuc dondurmedi. "
+    "Asagidaki metin veriye dayanmiyor; icindeki sayilara guvenilmemelidir."
+)
+
+_SAYI_DESENI = re.compile(r"\d")
+
+
+def _basarili_arac_ciktisi_var_mi(mesajlar: list[Any]) -> tuple[int, int]:
+    """Kac arac cagrisinin basarili, kacinin hata dondurdugunu sayar.
+
+    Araclar hatalarini {"hata": ...} olarak dondurur; istisna firlatmazlar
+    (agent'in plan degistirebilmesi icin). Bu, hatanin sessizce yutulabilmesi
+    anlamina da geliyor - agent hatayi gorup duzeltmek yerine cevabi
+    uydurabilir. Bu fonksiyon o durumu tespit edilebilir kilar.
+    """
+    basarili = hatali = 0
+    for m in mesajlar:
+        if not isinstance(m, ToolMessage):
+            continue
+        icerik = str(m.content)
+        try:
+            veri = json.loads(icerik)
+            hata_var = isinstance(veri, dict) and "hata" in veri
+        except (json.JSONDecodeError, TypeError):
+            hata_var = False
+        if hata_var:
+            hatali += 1
+        else:
+            basarili += 1
+    return basarili, hatali
+
+
 def ask(question: str) -> dict[str, Any]:
     """Bir soruyu ucdan uca calistirir ve cevabi denetim kaydiyla birlikte dondurur."""
     guard = Guard()
@@ -123,10 +163,25 @@ def ask(question: str) -> dict[str, Any]:
         for tc in (msg.tool_calls or [])
     ]
 
+    basarili, hatali = _basarili_arac_ciktisi_var_mi(result["messages"])
+
+    # Kod yolunda dayanak kontrolu. Gozlenen gercek hata: agent olmayan bir
+    # kolon adiyla arac cagirdi, guard reddetti, agent duzeltmek yerine
+    # "1500 satir, 27.500 TL" diye bir cevap uydurdu. Gercekte 4 satir vardi
+    # ve dogru cagri k esiginden reddedilecekti. Bu kontrol modelin iyi
+    # niyetine guvenmez: basarili arac ciktisi yoksa ve cevapta sayi varsa
+    # cevabin dayanaksiz oldugu kullaniciya soylenir.
+    dayanaksiz = basarili == 0 and bool(_SAYI_DESENI.search(answer))
+    if dayanaksiz:
+        guard.note("cevap_dayanagi", (), f"Basarili arac ciktisi yok ({hatali} hata), cevapta sayi var")
+        answer = f"{DESTEKSIZ_CEVAP_UYARISI}\n\n{answer}"
+
     return {
         "soru": question,
         "cevap": answer,
         "kullanilan_araclar": tool_calls,
         "denetim_kaydi": guard.audit_trail(),
         "adim_sayisi": len(result["messages"]),
+        "arac_ozeti": {"basarili": basarili, "hatali": hatali},
+        "dayanaksiz_cevap": dayanaksiz,
     }

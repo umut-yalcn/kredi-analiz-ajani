@@ -18,8 +18,10 @@ def show(question: str) -> None:
     print(result["cevap"])
     print("=" * 70)
 
+    ozet = result.get("arac_ozeti", {})
     if result["kullanilan_araclar"]:
-        print("\nKullanilan araclar:")
+        print(f"\nKullanilan araclar ({ozet.get('basarili', 0)} basarili, "
+              f"{ozet.get('hatali', 0)} hatali):")
         for i, call in enumerate(result["kullanilan_araclar"], 1):
             print(f"  {i}. {call['arac']}({call['girdi']})")
 

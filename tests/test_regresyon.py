@@ -252,6 +252,62 @@ class TestMaskelemeBaglami:
         assert any("korundu" in e["reason"] for e in g.audit_trail())
 
 
+class TestDayanakKontrolu:
+    """Bulgu 7: agent, arac hatasi aldiginda cevabi UYDURDU.
+
+    Gercek kosum: "kredi_skoru < 800 olanlarin ortalama geliri nedir?" sorusuna
+    agent metric='gelir' diye olmayan bir kolonla cagri yapti, guard reddetti,
+    agent duzeltmek yerine "1500 satir, 27.500 TL" dedi. Gercekte 4 satir vardi
+    ve dogru cagri k esiginden zaten reddedilecekti.
+
+    Araclar hatalarini istisna yerine {"hata": ...} olarak donduruyor - agent'in
+    plan degistirebilmesi icin. Ama bu, hatanin sessizce yutulabilmesi demek.
+    Kontrol modelin iyi niyetine birakilamaz; kod yolunda olmali.
+    """
+
+    def _tool_msg(self, icerik: str):
+        from langchain_core.messages import ToolMessage
+
+        return ToolMessage(content=icerik, tool_call_id="1")
+
+    def test_hatali_ciktilar_sayilir(self):
+        from src.agent import _basarili_arac_ciktisi_var_mi
+
+        mesajlar = [
+            self._tool_msg('{"hata": "Bilinmeyen kolon: gelir"}'),
+            self._tool_msg('{"hata": "Bu filtre yalnizca 4 satir donduruyor."}'),
+        ]
+        assert _basarili_arac_ciktisi_var_mi(mesajlar) == (0, 2)
+
+    def test_basarili_ciktilar_sayilir(self):
+        from src.agent import _basarili_arac_ciktisi_var_mi
+
+        mesajlar = [
+            self._tool_msg('{"kolon": "yas", "ortalama": 40.5}'),
+            self._tool_msg('{"hata": "Bilinmeyen kolon: gelir"}'),
+            self._tool_msg('{"kolon": "kredi_skoru", "ortalama": 1403.4}'),
+        ]
+        assert _basarili_arac_ciktisi_var_mi(mesajlar) == (2, 1)
+
+    def test_arac_cagrisi_yoksa_ikisi_de_sifir(self):
+        from src.agent import _basarili_arac_ciktisi_var_mi
+
+        assert _basarili_arac_ciktisi_var_mi([]) == (0, 0)
+
+    def test_json_olmayan_cikti_basarili_sayilir(self):
+        """search_data_dictionary duz metin donduruyor; hata sayilmamali."""
+        from src.agent import _basarili_arac_ciktisi_var_mi
+
+        assert _basarili_arac_ciktisi_var_mi([self._tool_msg("duz metin")]) == (1, 0)
+
+    def test_hata_kelimesi_iceren_mesru_cikti_hata_sayilmaz(self):
+        """Icinde 'hata' gecen ama hata anahtari olmayan cikti."""
+        from src.agent import _basarili_arac_ciktisi_var_mi
+
+        m = self._tool_msg('{"kolon": "notlar", "dagilim": {"hata_kaydi": 12}}')
+        assert _basarili_arac_ciktisi_var_mi([m]) == (1, 0)
+
+
 class TestVeriYolu:
     """Bulgu 6: DATA_PATH goreliydi; proje disindan calistirilinca patliyordu."""
 

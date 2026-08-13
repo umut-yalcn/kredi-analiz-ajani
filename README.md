@@ -57,7 +57,7 @@ yapar. Guard reddederse hatayı görür ve planını değiştirir.
 
 ## Güvenlik katmanı
 
-Dört bağımsız savunma, üst üste:
+Beş bağımsız savunma, üst üste:
 
 **1. PII veriye hiç yüklenmez.** `load_analysis_frame()` kişisel veri kolonlarını
 CSV'den okur okumaz düşürür. Analiz katmanının belleğinde o veri hiç bulunmaz.
@@ -73,6 +73,34 @@ edilmesini engeller — kredi bürosu bağlamında asıl mesele budur.
 **4. Çıktı maskeleme.** Üretilen metinde TCKN, telefon veya e-posta deseni
 kalırsa maskelenir. Üstteki katmanlar aşılırsa devreye giren son hat.
 
+**5. Dayanak kontrolü.** Cevap üretildikten sonra, arkasında **başarılı bir araç
+çıktısı olup olmadığı** koddan kontrol edilir. Yoksa ve cevapta sayı varsa, cevap
+`[DAYANAKSIZ CEVAP]` etiketiyle işaretlenir.
+
+Bu katman gerçek bir hatadan doğdu. Test sırasında ajana *"kredi skoru 800'ün
+altında olanların ortalama geliri nedir?"* soruldu. Ajan `metric='gelir'` diye
+olmayan bir kolonla çağrı yaptı, guard reddetti — ve ajan düzeltmek yerine
+**"1500 satır, 27.500 TL" diye bir cevap uydurdu.** Gerçekte 4 satır vardı ve
+doğru çağrı zaten k eşiğinden reddedilecekti.
+
+Sistem prompt'una "uydurma" yazmak bunu çözmedi; model tekrar uydurdu. Çözüm
+yine kod yolunda oldu:
+
+```
+$ python cli.py "Kredi skoru 800'ün altında olanların ortalama geliri nedir?"
+
+[DAYANAKSIZ CEVAP] Bu soruya hiçbir araç çağrısı başarılı sonuç döndürmedi.
+Aşağıdaki metin veriye dayanmıyor; içindeki sayılara güvenilmemelidir.
+...
+Kullanilan araclar (0 basarili, 1 hatali):
+  1. segment_stats({'metric': 'gelir', ...})
+```
+
+Model kalitesi burada ölçülebilir bir fark yaratıyor: aynı soruda
+`gemini-3.5-flash` önce `list_columns` çağırıp doğru kolon adını aldı, k
+eşiğinden reddedildi ve dürüstçe *"yalnızca 4 kişi var, hesaplayamam"* dedi.
+Zayıf model uydurdu, güçlü model uydurmadı — **koruma ikisinde de çalıştı.**
+
 Her karar, gerekçesiyle birlikte **denetim kaydına** yazılır ve API cevabında
 döner. Sistemin ne yaptığı ve neyi neden reddettiği izlenebilir.
 
@@ -81,7 +109,7 @@ döner. Sistemin ne yaptığı ve neyi neden reddettiği izlenebilir.
 Koruma katmanını doğrulamak için **API anahtarı gerekmez.** İki yol var:
 
 ```bash
-pytest tests/ -q              # 44 passed
+pytest tests/ -q              # 58 passed
 python scripts/demo_guard.py  # korumaları canlı gösterir
 ```
 
