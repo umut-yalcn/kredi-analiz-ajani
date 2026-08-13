@@ -18,7 +18,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import ToolNode
 
 from .catalog import CATALOG_TOOLS
 from .config import get_llm
@@ -60,11 +60,93 @@ Cevap bicimi:
 """
 
 
+#: Agent cevabi uydurmaya kalktiginda kac kez geri gonderilecegi.
+#: Sinir SART: yoksa arac duser -> model yeniden yazar -> yine duser dongusu olusur.
+MAKS_DUZELTME = 2
+
+#: Hata tipine gore ne yapmasi gerektigini SOYLEYEN yonlendirmeler.
+#: Genel bir "hatani duzelt" mesaji, somut bir talimat kadar ise yaramiyor.
+_DUZELTICI_YONLENDIRME: tuple[tuple[str, str], ...] = (
+    (
+        "Bilinmeyen kolon",
+        "Kolon adini yanlis yazdin. Once list_columns cagir, dogru adi oradan al, "
+        "sonra analizi ayni araci dogru kolon adiyla TEKRAR cagir.",
+    ),
+    (
+        "kisisel veri",
+        "Bu kolon analize kapali ve hicbir kosulda acilmayacak. Bu veriyle "
+        "yanit uretmeye calisma; soruyu neden yanitlayamadigini acikla.",
+    ),
+    (
+        "satir donduruyor",
+        "Filtren cok dar kaldi. Esigi genislet ve segment_stats'i tekrar cagir; "
+        "genisletemiyorsan bu segment hakkinda sonuc verilemeyecegini soyle.",
+    ),
+    (
+        "gruplama icin uygun degil",
+        "Gruplama icin kategorik bir kolon secmelisin. list_columns ile bak ve "
+        "group_aggregate'i uygun bir kolonla tekrar cagir.",
+    ),
+    (
+        "sayisal bir kolon degil",
+        "Korelasyon yalnizca sayisal kolonlar arasinda hesaplanir. "
+        "list_columns ile sayisal kolonlari gor ve tekrar dene.",
+    ),
+)
+
+
+class AnalizDurumu(MessagesState):
+    """Mesajlara ek olarak kac kez duzeltmeye gonderildigini tasir."""
+
+    duzeltme_denemesi: int
+
+
+def _hata_metinleri(mesajlar: list[Any]) -> list[str]:
+    """Arac mesajlarindaki hata aciklamalarini toplar."""
+    hatalar = []
+    for m in mesajlar:
+        if not isinstance(m, ToolMessage):
+            continue
+        try:
+            veri = json.loads(str(m.content))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(veri, dict) and "hata" in veri:
+            hatalar.append(str(veri["hata"]))
+    return hatalar
+
+
+def _duzeltici_mesaj(hatalar: list[str]) -> str:
+    """Hata tipine gore somut bir yonlendirme uretir."""
+    yonergeler = []
+    for hata in hatalar:
+        for anahtar, yonerge in _DUZELTICI_YONLENDIRME:
+            if anahtar in hata and yonerge not in yonergeler:
+                yonergeler.append(yonerge)
+
+    if not yonergeler:
+        yonergeler.append(
+            "Cagrini gozden gecir ve duzelterek tekrar dene; gerekirse once "
+            "list_columns ile mevcut kolonlara bak."
+        )
+
+    return (
+        "DUR. Hicbir arac cagrin basarili sonuc dondurmedi, dolayisiyla elinde "
+        "hicbir veri yok. Bu durumda sayi veremezsin - verdigin her sayi "
+        "uydurma olur.\n\n"
+        "Alinan hatalar:\n"
+        + "\n".join(f"  - {h}" for h in hatalar[-3:])
+        + "\n\nSimdi yapman gereken:\n"
+        + "\n".join(f"  - {y}" for y in yonergeler)
+        + "\n\nDuzeltemiyorsan cevap uydurma; soruyu neden yanitlayamadigini soyle."
+    )
+
+
 def build_agent():
     """Derlenmis LangGraph akisini dondurur."""
     llm = get_llm().bind_tools(ALL_TOOLS)
 
-    def call_model(state: MessagesState) -> dict[str, Any]:
+    def call_model(state: AnalizDurumu) -> dict[str, Any]:
         messages = state["messages"]
         # Adim siniri: agent dongude kalirsa elindeki bilgiyle sonlandirmasini iste
         if len(messages) > MAX_STEPS * 2:
@@ -78,13 +160,44 @@ def build_agent():
 
         return {"messages": [llm.invoke([SystemMessage(SYSTEM_PROMPT)] + messages)]}
 
-    graph = StateGraph(MessagesState)
+    def duzeltmeye_gonder(state: AnalizDurumu) -> dict[str, Any]:
+        """Agent'i, hatayi duzeltip tekrar denemeye zorlar.
+
+        Bu ICSEL bir oz-elestiri degil: modele kendi cevabini degerlendirmesini
+        soylemiyoruz. Guard'in urettigi somut, deterministik hata mesajini geri
+        veriyoruz. Arastirma bu ayrimda net - modeller dis geri bildirim
+        olmadan kendi hatalarini duzeltemiyor, dis geri bildirimle (derleyici,
+        arac, dogrulayici) duzeltebiliyor.
+        """
+        hatalar = _hata_metinleri(state["messages"])
+        return {
+            "messages": [HumanMessage(content=_duzeltici_mesaj(hatalar))],
+            "duzeltme_denemesi": state.get("duzeltme_denemesi", 0) + 1,
+        }
+
+    def yonlendir(state: AnalizDurumu) -> str:
+        son = state["messages"][-1]
+        if getattr(son, "tool_calls", None):
+            return "tools"
+
+        # Agent cevabi yazmak uzere. Arkasinda veri var mi?
+        basarili, hatali = _basarili_arac_ciktisi_var_mi(state["messages"])
+        deneme = state.get("duzeltme_denemesi", 0)
+        if basarili == 0 and hatali > 0 and deneme < MAKS_DUZELTME:
+            return "duzeltme"
+        return END
+
+    graph = StateGraph(AnalizDurumu)
     graph.add_node("agent", call_model)
     graph.add_node("tools", ToolNode(ALL_TOOLS))
+    graph.add_node("duzeltme", duzeltmeye_gonder)
 
     graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: END})
+    graph.add_conditional_edges(
+        "agent", yonlendir, {"tools": "tools", "duzeltme": "duzeltme", END: END}
+    )
     graph.add_edge("tools", "agent")
+    graph.add_edge("duzeltme", "agent")
 
     return graph.compile()
 
@@ -151,7 +264,9 @@ def ask(question: str) -> dict[str, Any]:
     set_guard(guard)
 
     agent = build_agent()
-    result = agent.invoke({"messages": [HumanMessage(content=question)]})
+    result = agent.invoke(
+        {"messages": [HumanMessage(content=question)], "duzeltme_denemesi": 0}
+    )
 
     final: AIMessage = result["messages"][-1]
     answer = guard.mask(_extract_text(final.content))
@@ -183,5 +298,6 @@ def ask(question: str) -> dict[str, Any]:
         "denetim_kaydi": guard.audit_trail(),
         "adim_sayisi": len(result["messages"]),
         "arac_ozeti": {"basarili": basarili, "hatali": hatali},
+        "duzeltme_denemesi": result.get("duzeltme_denemesi", 0),
         "dayanaksiz_cevap": dayanaksiz,
     }

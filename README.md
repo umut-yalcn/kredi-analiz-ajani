@@ -57,7 +57,7 @@ yapar. Guard reddederse hatayı görür ve planını değiştirir.
 
 ## Güvenlik katmanı
 
-Beş bağımsız savunma, üst üste:
+Altı bağımsız savunma, üst üste:
 
 **1. PII veriye hiç yüklenmez.** `load_analysis_frame()` kişisel veri kolonlarını
 CSV'den okur okumaz düşürür. Analiz katmanının belleğinde o veri hiç bulunmaz.
@@ -73,33 +73,73 @@ edilmesini engeller — kredi bürosu bağlamında asıl mesele budur.
 **4. Çıktı maskeleme.** Üretilen metinde TCKN, telefon veya e-posta deseni
 kalırsa maskelenir. Üstteki katmanlar aşılırsa devreye giren son hat.
 
-**5. Dayanak kontrolü.** Cevap üretildikten sonra, arkasında **başarılı bir araç
-çıktısı olup olmadığı** koddan kontrol edilir. Yoksa ve cevapta sayı varsa, cevap
-`[DAYANAKSIZ CEVAP]` etiketiyle işaretlenir.
+**5. Zorunlu düzeltme.** Ajan, arkasında hiçbir başarılı araç çıktısı olmadan
+cevap yazmaya kalkarsa akış onu `END`'e bırakmaz — hatayı gösterip **tekrar
+denemeye zorlar.**
 
-Bu katman gerçek bir hatadan doğdu. Test sırasında ajana *"kredi skoru 800'ün
-altında olanların ortalama geliri nedir?"* soruldu. Ajan `metric='gelir'` diye
-olmayan bir kolonla çağrı yaptı, guard reddetti — ve ajan düzeltmek yerine
-**"1500 satır, 27.500 TL" diye bir cevap uydurdu.** Gerçekte 4 satır vardı ve
-doğru çağrı zaten k eşiğinden reddedilecekti.
+**6. Dayanak kontrolü.** Düzeltme denemeleri tükenmişse ve cevapta hâlâ sayı
+varsa, cevap `[DAYANAKSIZ CEVAP]` etiketiyle işaretlenir.
 
-Sistem prompt'una "uydurma" yazmak bunu çözmedi; model tekrar uydurdu. Çözüm
-yine kod yolunda oldu:
+### Bu iki katman gerçek bir hatadan doğdu
+
+Test sırasında ajana *"kredi skoru 800'ün altında olanların ortalama geliri
+nedir?"* soruldu. Ajan `metric='gelir'` diye olmayan bir kolonla çağrı yaptı,
+guard reddetti — ve ajan düzeltmek yerine **"1500 satır, 27.500 TL" diye bir
+cevap uydurdu.** Gerçekte 4 satır vardı ve doğru çağrı zaten k eşiğinden
+reddedilecekti. Tekrar çalıştırınca bu kez "25.000 TL, 15.000 kişi" dedi — her
+seferinde farklı sayı, yani düpedüz konfabülasyon.
+
+Sistem prompt'una "uydurma" yazmak çözmedi; model yine uydurdu. Bu, projenin
+kurucu tezinin canlı kanıtı: **prompt bir kontrol değil, bir ricadır.**
+
+Çözüm grafın içinde. Araç hatası, modele somut bir yönlendirmeyle geri veriliyor:
 
 ```
-$ python cli.py "Kredi skoru 800'ün altında olanların ortalama geliri nedir?"
+DUR. Hiçbir araç çağrın başarılı sonuç döndürmedi, elinde hiçbir veri yok.
+Bu durumda sayı veremezsin — verdiğin her sayı uydurma olur.
 
-[DAYANAKSIZ CEVAP] Bu soruya hiçbir araç çağrısı başarılı sonuç döndürmedi.
-Aşağıdaki metin veriye dayanmıyor; içindeki sayılara güvenilmemelidir.
-...
-Kullanilan araclar (0 basarili, 1 hatali):
-  1. segment_stats({'metric': 'gelir', ...})
+Alınan hatalar:
+  - Bilinmeyen kolon: gelir
+
+Şimdi yapman gereken:
+  - Kolon adını yanlış yazdın. Önce list_columns çağır, doğru adı oradan al,
+    sonra aynı aracı doğru kolon adıyla TEKRAR çağır.
 ```
 
-Model kalitesi burada ölçülebilir bir fark yaratıyor: aynı soruda
-`gemini-3.5-flash` önce `list_columns` çağırıp doğru kolon adını aldı, k
-eşiğinden reddedildi ve dürüstçe *"yalnızca 4 kişi var, hesaplayamam"* dedi.
-Zayıf model uydurdu, güçlü model uydurmadı — **koruma ikisinde de çalıştı.**
+Aynı soru, aynı model, düzeltme döngüsünden sonra:
+
+```
+1. metric='gelir'        → Bilinmeyen kolon
+2. metric='aylik_gelir'  → Sonuç kümesi çok dar: 4 satır
+3. value=900             → Sonuç kümesi çok dar: 14 satır
+4. value=1000            → 44 satır, 37.038,64 TL  ✓
+```
+
+Ajan uydurmayı bırakıp kolon adını düzeltti, sonra k eşiğini geçene kadar
+filtreyi genişletti. **37.038,64 gerçek sayı.**
+
+### Neden bu tasarım
+
+Araştırma, kendi kendini düzeltmenin iki türünü net biçimde ayırıyor:
+
+- **İçsel** (model kendi cevabını eleştirir, dış girdi yok) — çalışmıyor, bazen
+  performansı düşürüyor
+- **Dışsal** (derleyici/araç/doğrulayıcıdan somut hata) — çalışıyor
+
+Buradaki geri bildirim **dışsal**: guard'ın ürettiği deterministik hata mesajı.
+Modele "cevabını gözden geçir" demiyoruz; "şu kolon yok, doğrusunu al" diyoruz.
+
+Üç tasarım kuralı literatürden:
+
+| Kural | Neden |
+|---|---|
+| Deneme sayacı (`MAKS_DUZELTME = 2`) | Yoksa sonsuz döngü: araç düşer → model yeniden yazar → yine düşer |
+| Hata tipine özel yönlendirme | *"list_columns çağır"*, *"hatanı düzelt"*ten belirgin biçimde daha etkili |
+| Tükenince uydurma gösterme | Son savunma: `[DAYANAKSIZ CEVAP]` |
+
+Döngü, gerçek model çağırmadan **sahte bir modelle deterministik olarak** test
+ediliyor (`tests/test_duzeltme.py`) — uydurma senaryosu, sonsuz döngü, sayaç
+sınırı ve denetim kaydının korunması dahil.
 
 Her karar, gerekçesiyle birlikte **denetim kaydına** yazılır ve API cevabında
 döner. Sistemin ne yaptığı ve neyi neden reddettiği izlenebilir.
@@ -109,7 +149,7 @@ döner. Sistemin ne yaptığı ve neyi neden reddettiği izlenebilir.
 Koruma katmanını doğrulamak için **API anahtarı gerekmez.** İki yol var:
 
 ```bash
-pytest tests/ -q              # 58 passed
+pytest tests/ -q              # 69 passed
 python scripts/demo_guard.py  # korumaları canlı gösterir
 ```
 

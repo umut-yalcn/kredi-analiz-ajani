@@ -1,0 +1,194 @@
+"""Zorunlu tekrar deneme (duzeltme dongusu) testleri.
+
+Model cagirmadan test edilir: gercek LLM yerine, davranisi onceden yazilmis
+sahte bir model kullaniliyor. Boylece "agent hata alinca ne yapar" sorusu
+deterministik olarak sinanabiliyor - gercek modelle bu ancak sansa bagli
+gozlemlenirdi.
+
+API anahtari gerektirmez.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage
+
+from src import agent as ajan_modulu
+from src.agent import MAKS_DUZELTME, _duzeltici_mesaj, _hata_metinleri, build_agent
+from src.guard import Guard
+from src.tools import set_guard
+
+
+class SahteModel:
+    """Onceden yazilmis cevaplari sirayla dondurur.
+
+    LangGraph'in bind_tools cagrisini de karsilamasi gerekiyor; kendini
+    donduruyor cunku arac baglama davranisini taklit etmeye gerek yok.
+    """
+
+    def __init__(self, cevaplar: list[AIMessage]) -> None:
+        self.cevaplar = list(cevaplar)
+        self.gorulen_istemler: list[list] = []
+
+    def bind_tools(self, _araclar):
+        return self
+
+    def invoke(self, mesajlar, *args, **kwargs) -> AIMessage:
+        self.gorulen_istemler.append(mesajlar)
+        if self.cevaplar:
+            return self.cevaplar.pop(0)
+        return AIMessage(content="Baska sozum yok.")
+
+
+def _arac_cagrisi(ad: str, args: dict, cid: str = "1") -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": ad, "args": args, "id": cid, "type": "tool_call"}],
+    )
+
+
+@pytest.fixture
+def sahte(monkeypatch):
+    """get_llm'i sahte modelle degistirir."""
+
+    def kur(cevaplar):
+        model = SahteModel(cevaplar)
+        monkeypatch.setattr(ajan_modulu, "get_llm", lambda *a, **k: model)
+        set_guard(Guard())
+        return model
+
+    return kur
+
+
+class TestDuzelticiMesaj:
+    def test_bilinmeyen_kolon_icin_somut_yonlendirme(self):
+        mesaj = _duzeltici_mesaj(["Bilinmeyen kolon: gelir"])
+        assert "list_columns" in mesaj
+        assert "TEKRAR" in mesaj
+
+    def test_pii_icin_tekrar_denemeye_yonlendirmez(self):
+        mesaj = _duzeltici_mesaj(["Su kolonlar kisisel veri iceriyor: tckn"])
+        assert "hicbir kosulda acilmayacak" in mesaj
+
+    def test_dar_segment_icin_genislet_der(self):
+        mesaj = _duzeltici_mesaj(["Bu filtre yalnizca 4 satir donduruyor."])
+        assert "genislet" in mesaj.lower()
+
+    def test_taninmayan_hata_icin_genel_yonlendirme(self):
+        mesaj = _duzeltici_mesaj(["Beklenmedik bir sey oldu"])
+        assert "list_columns" in mesaj
+
+    def test_hata_metinleri_arac_mesajlarindan_toplanir(self):
+        from langchain_core.messages import ToolMessage
+
+        mesajlar = [
+            ToolMessage(content='{"hata": "Bilinmeyen kolon: gelir"}', tool_call_id="1"),
+            ToolMessage(content='{"kolon": "yas"}', tool_call_id="2"),
+            ToolMessage(content="duz metin", tool_call_id="3"),
+        ]
+        assert _hata_metinleri(mesajlar) == ["Bilinmeyen kolon: gelir"]
+
+
+class TestDuzeltmeDongusu:
+    def test_hatadan_sonra_uydurma_engellenir_ve_tekrar_denenir(self, sahte):
+        """Gercek gozlenen senaryo: yanlis kolon adi -> hata -> uydurma.
+
+        Simdi araya duzeltme dugumu giriyor; model ikinci turda dogru cagriyi
+        yapiyor ve cevap gercek veriye dayaniyor.
+        """
+        model = sahte(
+            [
+                _arac_cagrisi("segment_stats", {
+                    "column": "kredi_skoru", "operator": "<", "value": 1000,
+                    "metric": "gelir",
+                }),
+                AIMessage(content="Ortalama gelir 27.500 TL, 1500 satirdan."),
+                _arac_cagrisi("segment_stats", {
+                    "column": "kredi_skoru", "operator": "<", "value": 1000,
+                    "metric": "aylik_gelir",
+                }, cid="2"),
+                AIMessage(content="Ortalama aylik gelir 37.038 TL."),
+            ]
+        )
+
+        sonuc = build_agent().invoke(
+            {"messages": [HumanMessage(content="soru")], "duzeltme_denemesi": 0}
+        )
+
+        assert sonuc["duzeltme_denemesi"] == 1
+        assert sonuc["messages"][-1].content == "Ortalama aylik gelir 37.038 TL."
+
+        # Duzeltme mesaji gercekten modele gitti mi?
+        son_istem = model.gorulen_istemler[-1]
+        assert any("DUR." in str(m.content) for m in son_istem)
+
+    def test_basarili_cagri_varsa_duzeltmeye_gitmez(self, sahte):
+        sahte(
+            [
+                _arac_cagrisi("describe_column", {"column": "kredi_skoru"}),
+                AIMessage(content="Ortalama kredi skoru 1403."),
+            ]
+        )
+        sonuc = build_agent().invoke(
+            {"messages": [HumanMessage(content="soru")], "duzeltme_denemesi": 0}
+        )
+        assert sonuc["duzeltme_denemesi"] == 0
+
+    def test_hic_arac_cagrilmadiysa_duzeltmeye_gitmez(self, sahte):
+        """Arac cagirmadan cevap veren bir soru (ornegin selamlama) engellenmemeli."""
+        sahte([AIMessage(content="Merhaba, nasil yardimci olabilirim?")])
+        sonuc = build_agent().invoke(
+            {"messages": [HumanMessage(content="merhaba")], "duzeltme_denemesi": 0}
+        )
+        assert sonuc["duzeltme_denemesi"] == 0
+
+    def test_deneme_siniri_sonsuz_dongude_kilitlenmez(self, sahte):
+        """Model inatla ayni hatayi yapiyorsa akis sonlanmali.
+
+        Sinir olmasaydi: arac duser -> model yeniden yazar -> yine duser.
+        """
+        inatci = []
+        for i in range(12):
+            inatci.append(_arac_cagrisi("describe_column", {"column": "gelir"}, cid=str(i)))
+            inatci.append(AIMessage(content=f"Uydurma cevap {i}: 123 TL."))
+
+        sahte(inatci)
+        sonuc = build_agent().invoke(
+            {"messages": [HumanMessage(content="soru")], "duzeltme_denemesi": 0}
+        )
+
+        assert sonuc["duzeltme_denemesi"] == MAKS_DUZELTME
+        assert isinstance(sonuc["messages"][-1], AIMessage)
+
+    def test_denemeler_tukenirse_cevap_dayanaksiz_isaretlenir(self, sahte, monkeypatch):
+        """Son savunma: duzeltme ise yaramadiysa cevap etiketlenmeli."""
+        inatci = []
+        for i in range(12):
+            inatci.append(_arac_cagrisi("describe_column", {"column": "gelir"}, cid=str(i)))
+            inatci.append(AIMessage(content=f"Ortalama 123 TL."))
+        sahte(inatci)
+
+        sonuc = ajan_modulu.ask("soru")
+
+        assert sonuc["dayanaksiz_cevap"] is True
+        assert sonuc["cevap"].startswith("[DAYANAKSIZ CEVAP]")
+        assert sonuc["duzeltme_denemesi"] == MAKS_DUZELTME
+        assert sonuc["arac_ozeti"]["basarili"] == 0
+
+    def test_duzeltme_sonrasi_denetim_kaydi_korunur(self, sahte):
+        """Guard baglami duzeltme dongusunde kaybolmamali."""
+        sahte(
+            [
+                _arac_cagrisi("describe_column", {"column": "gelir"}),
+                AIMessage(content="Uydurma 5 TL."),
+                _arac_cagrisi("describe_column", {"column": "kredi_skoru"}, cid="2"),
+                AIMessage(content="Ortalama 1403."),
+            ]
+        )
+        sonuc = ajan_modulu.ask("soru")
+        kayit = sonuc["denetim_kaydi"]
+        assert any(not e["allowed"] for e in kayit), "reddedilen istek kayda gecmedi"
+        assert any(e["allowed"] for e in kayit), "izin verilen istek kayda gecmedi"
+        assert sonuc["dayanaksiz_cevap"] is False

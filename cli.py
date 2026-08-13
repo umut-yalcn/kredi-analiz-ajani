@@ -25,6 +25,10 @@ def show(question: str) -> None:
         for i, call in enumerate(result["kullanilan_araclar"], 1):
             print(f"  {i}. {call['arac']}({call['girdi']})")
 
+    if result.get("duzeltme_denemesi"):
+        print(f"\nDuzeltmeye geri gonderme: {result['duzeltme_denemesi']} kez "
+              "(dayanaksiz cevap yazmaya kalkisti)")
+
     reddedilen = [e for e in result["denetim_kaydi"] if not e["allowed"]]
     if reddedilen:
         print("\nGuard tarafindan reddedilen istekler:")
