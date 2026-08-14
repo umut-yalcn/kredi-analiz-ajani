@@ -503,6 +503,26 @@ def _basarili_arac_ciktisi_var_mi(mesajlar: list[Any]) -> tuple[int, int]:
     return basarili, hatali
 
 
+def _maskeli(deger: Any, guard: Guard) -> Any:
+    """Ic ice yapilardaki tum metinleri maskeler.
+
+    mask() YALNIZCA cevap alanina uygulaniyordu. Oysa guard, bilinmeyen kolon
+    adini denetim kaydina ve hata metnine BIREBIR yaziyor; model (ya da prompt
+    enjeksiyonuyla yonlendirilen model) kullanicinin sorusundaki bir deseni
+    arac argumanina koydugunda o desen maskelenmeden API cevabina ve CLI
+    ciktisina ulasiyordu. Olculdu: arac girdisinde 11 haneli desen maskesiz
+    dondu. Son savunma hatti tek bir alani degil, DISARI CIKAN HER SEYI
+    kapsamali.
+    """
+    if isinstance(deger, str):
+        return guard.mask(deger)
+    if isinstance(deger, dict):
+        return {k: _maskeli(v, guard) for k, v in deger.items()}
+    if isinstance(deger, (list, tuple)):
+        return [_maskeli(v, guard) for v in deger]
+    return deger
+
+
 def ask(question: str) -> dict[str, Any]:
     """Bir soruyu ucdan uca calistirir ve cevabi denetim kaydiyla birlikte dondurur."""
     guard = Guard()
@@ -517,7 +537,7 @@ def ask(question: str) -> dict[str, Any]:
     answer = guard.mask(_extract_text(final.content))
 
     tool_calls = [
-        {"arac": tc["name"], "girdi": tc["args"]}
+        {"arac": tc["name"], "girdi": _maskeli(tc["args"], guard)}
         for msg in result["messages"]
         if isinstance(msg, AIMessage)
         for tc in (msg.tool_calls or [])
@@ -566,7 +586,7 @@ def ask(question: str) -> dict[str, Any]:
         "soru": question,
         "cevap": answer,
         "kullanilan_araclar": tool_calls,
-        "denetim_kaydi": guard.audit_trail(),
+        "denetim_kaydi": _maskeli(guard.audit_trail(), guard),
         "adim_sayisi": len(result["messages"]),
         "arac_ozeti": {"basarili": basarili, "hatali": hatali},
         "duzeltme_denemesi": result.get("duzeltme_denemesi", 0),

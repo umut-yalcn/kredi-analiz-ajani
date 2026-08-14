@@ -74,20 +74,37 @@ class TestGuardIzolasyonu:
     kayitlari birbirine karisiyordu."""
 
     def test_es_zamanli_istekler_kendi_kaydini_tutar(self):
-        sonuc: dict[str, int] = {}
+        """Kaydin ICERIGI dogrulaniyor, yalnizca dolulugu degil.
+
+        Onceki hali `len(audit_trail()) >= 1` diyordu; bu izolasyonu degil
+        BOS OLMAMAYI olcuyordu. A'nin kaydi B'nin kolonlarini da icerse test
+        yine geciyordu ve etkinligi thread zamanlamasina bagliydi: modul
+        duzeyi global guard geri getirildiginde bile, thread'ler sirayla
+        kostugunda assert geciyordu. Artik her kayit YALNIZCA kendi kolonunu
+        icermeli.
+        """
+        sonuc: dict[str, list[dict]] = {}
 
         def istek(ad: str, kolon: str) -> None:
             g = Guard()
             set_guard(g)
             describe_column.invoke({"column": kolon})
-            sonuc[ad] = len(g.audit_trail())
+            sonuc[ad] = g.audit_trail()
 
         t1 = threading.Thread(target=istek, args=("A", "kredi_skoru"))
         t2 = threading.Thread(target=istek, args=("B", "aylik_gelir"))
         t1.start(); t2.start(); t1.join(); t2.join()
 
-        assert sonuc["A"] >= 1, "A'nin denetim kaydi baska istege dustu"
-        assert sonuc["B"] >= 1, "B'nin denetim kaydi baska istege dustu"
+        for ad, kendi, digeri in (("A", "kredi_skoru", "aylik_gelir"),
+                                  ("B", "aylik_gelir", "kredi_skoru")):
+            kayit = sonuc[ad]
+            assert kayit, f"{ad}'nin denetim kaydi bos"
+            metin = " ".join(
+                str(e.get("columns", "")) + " " + str(e.get("reason", ""))
+                for e in kayit
+            )
+            assert kendi in metin, f"{ad} kendi kolonunu kaydetmemis"
+            assert digeri not in metin, f"{ad}'nin kaydina digerinin kolonu karismis"
 
     def test_guard_atanmadan_da_calisir(self):
         """ContextVar varsayilansiz; erisim once yapilirsa yenisi uretilmeli."""
@@ -754,3 +771,63 @@ class TestOpus5Denetimi:
         assert "hata" in red
         ok = _c(group_aggregate, group_by="meslek_grubu", metric="temerrut", how="rate")
         assert "hata" not in ok and ok["sonuc"]
+
+    def test_maskeleme_denetim_kaydini_ve_arac_girdisini_de_kapsar(self):
+        """mask() YALNIZCA cevap alanina uygulaniyordu.
+
+        Guard bilinmeyen kolon adini denetim kaydina birebir yaziyor; model
+        kullanicinin sorusundaki bir deseni arac argumanina koydugunda o desen
+        maskelenmeden API cevabina ve CLI ciktisina ulasiyordu.
+        """
+        from src.agent import _maskeli
+
+        g = Guard()
+        cikti = _maskeli(
+            {
+                "denetim_kaydi": [{"reason": "Bilinmeyen kolon: x12345678901y"}],
+                "kullanilan_araclar": [{"girdi": {"column": "a 0532 123 45 67 b"}}],
+                "sayi": 42,
+                "bayrak": True,
+            },
+            g,
+        )
+        assert "12345678901" not in str(cikti["denetim_kaydi"])
+        assert "[TCKN_MASKELENDI]" in str(cikti["denetim_kaydi"])
+        assert "[TELEFON_MASKELENDI]" in str(cikti["kullanilan_araclar"])
+        # Sayi ve bool alanlar bozulmamali
+        assert cikti["sayi"] == 42 and cikti["bayrak"] is True
+
+    def test_ortuk_guard_kayitta_gorunur(self):
+        """get_guard() sessizce yeni Guard uretiyordu: kontroller calisiyor
+        ama kararlar ask()'in denetim kaydina HIC girmiyordu. Denetim kaydi
+        uyumluluk kaniti olarak sunuldugu icin sessizce eksilmemeli."""
+        # Taze bir thread'de ContextVar bos baslar; ayni thread'de reset
+        # etmek yetmiyor cunku onceki testler degeri doldurmus oluyor.
+        kayit: list[dict] = []
+
+        def taze_baglamda() -> None:
+            kayit.extend(get_guard().audit_trail())
+
+        t = threading.Thread(target=taze_baglamda)
+        t.start(); t.join()
+        assert any("Ortuk guard" in e["reason"] for e in kayit)
+
+    def test_bastirilan_satir_sayisi_kaba_aralik_olarak_verilir(self):
+        """Toplami gizlemek tek basina yetmiyordu: N baska araclardan tam
+        alinabildigi icin tek grup bastirildiginda boyutu N - gorunen ile
+        birebir geri cozuluyordu."""
+        import src.tools as T
+
+        df = load_analysis_frame().copy()
+        df.loc[df.index[:5], "il"] = "NADIR_IL"
+        orijinal = T.load_analysis_frame
+        T.load_analysis_frame = lambda: df
+        try:
+            set_guard(Guard())
+            r = _c(describe_column, column="il")
+        finally:
+            T.load_analysis_frame = orijinal
+
+        assert r["bastirilan_grup_sayisi"] == 1
+        assert "satir_sayisi" not in r          # kesin toplam hala gizli
+        assert r["bastirilan_yaklasik_satir"] == "0-20"

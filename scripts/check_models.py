@@ -41,15 +41,29 @@ def _tool_schema() -> list[dict]:
 
 
 def list_available() -> list[str]:
-    """Anahtarin erisebildigi, icerik uretebilen modelleri listeler."""
-    import google.generativeai as genai
+    """Anahtarin erisebildigi, icerik uretebilen modelleri listeler.
 
-    genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
-    return [
-        m.name.removeprefix("models/")
-        for m in genai.list_models()
-        if "generateContent" in m.supported_generation_methods
-    ]
+    ESKI SDK'DAN GECIRILDI. Onceden `google.generativeai` kullaniliyordu; o
+    paket ne requirements'ta ne de kurulu ortamda var (langchain-google-genai
+    4.x yeni `google.genai` paketini kullaniyor). main() icindeki genis
+    `except Exception` ImportError'i yutuyor, betik "[UYARI] Model listesi
+    alinamadi" deyip devam ediyordu - yani bu ozellik fiilen oluydu.
+    """
+    try:
+        from google import genai
+    except ImportError as hata:   # ayri yakalaniyor: sessizce yutulmasin
+        raise RuntimeError(
+            "google-genai paketi kurulu degil. `pip install google-genai` "
+            "calistir; langchain-google-genai 4.x zaten bunu kullaniyor."
+        ) from hata
+
+    istemci = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+    modeller = []
+    for m in istemci.models.list():
+        eylemler = getattr(m, "supported_actions", None) or []
+        if "generateContent" in eylemler:
+            modeller.append(str(m.name).removeprefix("models/"))
+    return modeller
 
 
 def test_tool_calling(model_id: str) -> tuple[bool, str]:

@@ -42,8 +42,23 @@ def get_guard() -> Guard:
     try:
         return _guard_var.get()
     except LookupError:
+        # Fallback KALDIRILMADI: set_guard yalnizca ask() icinde cagriliyor,
+        # yani araclari dogrudan kullanan demo betikleri ve testler buna
+        # bagli. Kati hale getirmek onlari kirardi.
+        #
+        # Ama sessiz de kalmamali: bu yoldan gecen bir cagri guvenlik
+        # kontrollerini yine calistirir, ancak kararlari ask()'in dondurdugu
+        # denetim kaydina HIC girmez. Denetim kaydi bu projede uyumluluk
+        # kaniti olarak sunuluyor; sessizce eksilmesi test edilemez bir risk.
+        # Artik kaydin kendisi ortuk oldugunu soyluyor.
         guard = Guard()
         _guard_var.set(guard)
+        guard.note(
+            "guard",
+            (),
+            "Ortuk guard: set_guard cagrilmadan olusturuldu, bu kararlar "
+            "ask() denetim kaydina girmez",
+        )
         return guard
 
 
@@ -203,10 +218,21 @@ def describe_column(column: str) -> str:
         "bastirilan_grup_sayisi": len(suppressed),
     }
     if suppressed:
+        # Toplam satir sayisini gizlemek TEK BASINA yetmiyordu: N zaten baska
+        # araclardan tam olarak alinabiliyor (correlation'daki
+        # veri_setindeki_satir_sayisi, segment_stats'taki toplam_icindeki_pay).
+        # Tek grup bastirildiginda boyutu N - gorunen ile birebir geri
+        # cozuluyordu. Bu yuzden bastirilan TOPLAM, k'nin katina yuvarlanarak
+        # ACIKCA veriliyor: gizlemeye calisip basaramamaktansa kaba bir ust
+        # sinir vermek hem durust hem de tekil cikarimi kiriyor.
+        gizlenen = int(series.count()) - int(gorunen)
+        kaba = (gizlenen // K_ANONYMITY_THRESHOLD) * K_ANONYMITY_THRESHOLD
+        cikti["bastirilan_yaklasik_satir"] = f"{kaba}-{kaba + K_ANONYMITY_THRESHOLD}"
         cikti["not"] = (
             f"{len(suppressed)} grup k<{K_ANONYMITY_THRESHOLD} nedeniyle bastirildi. "
-            "Toplam satir sayisi bilerek verilmiyor: gorunen toplamla farki, "
-            "gizlenen grubun kesin buyuklugunu ele verirdi."
+            f"Bastirilan satir sayisi yalnizca {K_ANONYMITY_THRESHOLD}'lik bir "
+            "aralik olarak veriliyor; kesin deger tek bir grubun buyuklugunu "
+            "ele verebilirdi."
         )
     else:
         cikti["satir_sayisi"] = int(series.count())
