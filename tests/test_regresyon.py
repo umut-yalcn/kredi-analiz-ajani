@@ -727,6 +727,7 @@ class TestOpus5Denetimi:
         for metin in ["123 456 789 01", "12345-678901", "123.456.789.01"]:
             assert "[TCKN_MASKELENDI]" in g.mask(metin), metin
 
+    @pytest.mark.filterwarnings("ignore:invalid value encountered in divide")
     def test_tanimsiz_korelasyon_guclu_negatif_demez(self):
         """abs(nan) hicbir esikten kucuk degil, nan > 0 da False: tanimsiz r
         SESSIZCE 'guclu negatif' oluyordu. Sayi olmadigi icin dayanak
