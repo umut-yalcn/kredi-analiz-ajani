@@ -452,3 +452,111 @@ class TestPiiBellegeGirmez:
         df = load_analysis_frame()
         assert set(df.columns) == set(ANALYZABLE_COLUMNS)
         assert not [c for c in PII_COLUMNS if c in df.columns]
+
+
+class TestSayiDayanagi:
+    """Bagimsiz Codex denetimi: dayanak kontrolu yalnizca "basarili bir arac
+    cagrisi var mi" diye bakiyordu. Agent list_columns cagirip ardindan
+    "temerrut orani %98,7" dediginde cevap DAYANAKLI sayiliyordu - alakasiz tek
+    bir basarili cagri, cevaptaki tum sayilara sinirsiz dayanak sagliyordu.
+    """
+
+    def _kos(self, cevaplar):
+        from langchain_core.messages import AIMessage
+
+        from src import agent as A
+
+        class Sahte:
+            def __init__(s):
+                s.c = list(cevaplar)
+
+            def bind_tools(s, _):
+                return s
+
+            def with_retry(s, *a, **k):
+                return s
+
+            def invoke(s, m, *a, **k):
+                return s.c.pop(0) if s.c else AIMessage(content="Yanitlayamiyorum.")
+
+        eski = A.get_llm
+        A.get_llm = lambda *a, **k: Sahte()
+        try:
+            set_guard(Guard())
+            return A.ask("soru")
+        finally:
+            A.get_llm = eski
+
+    @staticmethod
+    def _tc(ad, args=None):
+        from langchain_core.messages import AIMessage
+
+        return AIMessage(content="", tool_calls=[
+            {"name": ad, "args": args or {}, "id": "1", "type": "tool_call"}])
+
+    def test_alakasiz_cagri_uydurma_sayiya_dayanak_olmaz(self):
+        from langchain_core.messages import AIMessage
+
+        r = self._kos([self._tc("list_columns"),
+                       AIMessage(content="Temerrut orani %98,7 ve 4200 kisi.")])
+        assert r["dayanaksiz_cevap"] is True
+        assert set(r["dogrulanmayan_sayilar"]) == {"98.7", "4200"}
+
+    def test_gercek_sayilar_dogrulanir(self):
+        from langchain_core.messages import AIMessage
+
+        r = self._kos([self._tc("describe_column", {"column": "kredi_skoru"}),
+                       AIMessage(content="Ortalama kredi skoru 1403.42, 5000 satir.")])
+        assert r["dayanaksiz_cevap"] is False
+        assert r["dogrulanmayan_sayilar"] == []
+
+    def test_yuvarlama_yanlis_pozitif_uretmez(self):
+        """Agent 1403.42'yi '1403' diye yazabilir; bu uydurma degildir."""
+        from langchain_core.messages import AIMessage
+
+        r = self._kos([self._tc("describe_column", {"column": "kredi_skoru"}),
+                       AIMessage(content="Ortalama kredi skoru 1403.")])
+        assert r["dogrulanmayan_sayilar"] == []
+
+    def test_arac_cagrilmadan_veri_iddiasi_duzeltmeye_gider(self):
+        """Rakamsiz ama veriye dair bir iddia da dayanaksiz kalmamali."""
+        from langchain_core.messages import AIMessage
+
+        r = self._kos([AIMessage(content="En riskli grup kamudur.")])
+        assert r["duzeltme_denemesi"] >= 1
+
+    def test_selamlama_engellenmez(self):
+        from langchain_core.messages import AIMessage
+
+        r = self._kos([AIMessage(content="Merhaba, nasil yardimci olabilirim?")])
+        assert r["duzeltme_denemesi"] == 0
+        assert r["dayanaksiz_cevap"] is False
+
+
+class TestDenetimKaydiEksiksiz:
+    """Bagimsiz Codex denetimi: 'her guard karari kayda gecer' iddiasi
+    tutmuyordu. Basarili kontroller yazilmiyordu ve arac duzeyi dogrulama
+    hatalari denetim izinde HIC gorunmuyordu - gecersiz bir cagride kayit
+    yalnizca 'izin verildi' satirlarindan olusuyordu.
+    """
+
+    def test_arac_dogrulama_hatasi_kayda_gecer(self):
+        g = Guard()
+        set_guard(g)
+        _c(group_aggregate, group_by="kredi_skoru", metric="aylik_gelir", how="mean")
+        assert any(not e["allowed"] for e in g.audit_trail())
+
+    def test_basarili_k_kontrolu_kayda_gecer(self):
+        g = Guard()
+        set_guard(g)
+        _c(segment_stats, column="kredi_skoru", operator="<", value=1400,
+           metric="aylik_gelir")
+        gerekceler = " ".join(e["reason"] for e in g.audit_trail())
+        assert "k kontrolu gecildi" in gerekceler
+        assert "Fark alma kontrolu gecildi" in gerekceler
+
+    def test_bastirma_olmasa_da_grup_karari_kayda_gecer(self):
+        g = Guard()
+        set_guard(g)
+        _c(describe_column, column="il")
+        assert any("k esigini gecti" in e["reason"] for e in g.audit_trail())

@@ -99,11 +99,25 @@ sorgu denetimi kalıcı bir depoda, kullanıcı/oturum bazında tutulmalıdır.
 kalırsa maskelenir. Üstteki katmanlar aşılırsa devreye giren son hat.
 
 **5. Zorunlu düzeltme.** Ajan, arkasında hiçbir başarılı araç çıktısı olmadan
-cevap yazmaya kalkarsa akış onu `END`'e bırakmaz — hatayı gösterip **tekrar
-denemeye zorlar.**
+veri hakkında bir iddia yazmaya kalkarsa akış onu `END`'e bırakmaz — hatayı
+gösterip **tekrar denemeye zorlar.** Selamlama gibi iddiasız cevaplar
+engellenmez; ayrım kolon adları ve kategorik değerler üzerinden deterministik
+olarak yapılır.
 
-**6. Dayanak kontrolü.** Düzeltme denemeleri tükenmişse ve cevapta hâlâ sayı
-varsa, cevap `[DAYANAKSIZ CEVAP]` etiketiyle işaretlenir.
+**6. Sayı dayanağı.** Cevaptaki her sayı, araç çıktılarında geçip geçmediğine
+göre kontrol edilir. Geçmeyenler `dogrulanmayan_sayilar` alanında raporlanır;
+hiçbiri geçmiyorsa cevap `[DAYANAKSIZ CEVAP]` etiketlenir.
+
+Bu katman bağımsız bir denetimde ortaya çıkan bir açığı kapatıyor: kontrol
+önceden yalnızca *"başarılı bir araç çağrısı var mı"* diye bakıyordu. Ajan
+`list_columns` çağırıp ardından *"temerrüt oranı %98,7"* dediğinde cevap
+**dayanaklı sayılıyordu** — alakasız tek bir başarılı çağrı, cevaptaki tüm
+sayılara sınırsız dayanak sağlıyordu.
+
+Kontrol deterministik: model çağrısı yok, kota yemiyor, keyfi yanlış pozitif
+üretmiyor. Yuvarlamaya toleranslı — ajan `1403.42`'yi *"1403"* diye yazabilir.
+Türetilmiş değerler (iki sayıdan hesaplanan oran) doğal olarak eşleşmeyebilir;
+bu yüzden engelleyici değil **raporlayıcı**.
 
 ### Bu iki katman gerçek bir hatadan doğdu
 
@@ -174,7 +188,7 @@ döner. Sistemin ne yaptığı ve neyi neden reddettiği izlenebilir.
 Koruma katmanını doğrulamak için **API anahtarı gerekmez.** İki yol var:
 
 ```bash
-pytest tests/ -q              # 101 passed
+pytest tests/ -q              # 109 passed
 python scripts/demo_guard.py  # korumaları canlı gösterir
 ```
 

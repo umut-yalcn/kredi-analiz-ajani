@@ -99,17 +99,24 @@ class Guard:
     def check_group_sizes(self, action: str, group_counts: dict[Any, int]) -> list[Any]:
         """k esiginin altinda kalan gruplari dondurur; bunlar sonuctan cikarilir."""
         suppressed = [key for key, n in group_counts.items() if n < K_ANONYMITY_THRESHOLD]
-        if suppressed:
-            self._record(
-                action,
-                (),
-                True,
-                f"{len(suppressed)} grup k<{K_ANONYMITY_THRESHOLD} nedeniyle bastirildi",
-            )
+        self._record(
+            action,
+            (),
+            True,
+            f"{len(suppressed)} grup k<{K_ANONYMITY_THRESHOLD} nedeniyle bastirildi"
+            if suppressed
+            else f"{len(group_counts)} grubun hepsi k esigini gecti",
+        )
         return suppressed
 
     def check_row_count(self, action: str, n_rows: int) -> None:
-        """Filtre sonucu cok daralmissa tekil kisiye inilebilir; bunu engelle."""
+        """Filtre sonucu cok daralmissa tekil kisiye inilebilir; bunu engelle.
+
+        Basarili kontrol de kayda gecer: denetim kaydi "her guard karari"
+        iddiasini tasiyorsa, gecen kontroller de gorunmeli. Onceden yalnizca
+        RETLER yaziliyordu; bir denetci "bu sorgu k kontrolunden gecti mi"
+        sorusunu kayittan yanitlayamiyordu.
+        """
         if 0 < n_rows < K_ANONYMITY_THRESHOLD:
             self._record(action, (), False, f"Sonuc kumesi cok dar: {n_rows} satir")
             raise GuardViolation(
@@ -117,6 +124,7 @@ class Guard:
                 "satir gerekiyor, aksi halde sonuc tek bir kisiye indirgenebilir. "
                 "Filtreyi genislet."
             )
+        self._record(action, (), True, f"k kontrolu gecildi: {n_rows} satir")
 
     # --- 2b. Fark alma (differencing) savunmasi ------------------------------
 
@@ -156,6 +164,7 @@ class Guard:
                     oncekiler.add(n_rows)
 
         if not catisma:
+            self._record(action, (key,), True, f"Fark alma kontrolu gecildi: {n_rows} satir")
             return
 
         # Ret gerekcesi ONCEKI sorgunun satir sayisini ACIKLAMAZ. Aciklasaydi,
@@ -226,6 +235,15 @@ class Guard:
         return masked
 
     # --- 4. Denetim kaydi ------------------------------------------------
+
+    def reddet(self, action: str, columns: tuple[str, ...], reason: str) -> None:
+        """Arac duzeyindeki bir REDDI kayda gecirir.
+
+        Guard'in kendi kontrolleri disinda kalan dogrulamalar (kolon tipi vb.)
+        de denetim izinde gorunmeli; onceden bu retler kayda hic girmiyordu ve
+        denetim izi yalnizca "izin verildi" satirlarindan olusuyordu.
+        """
+        self._record(action, columns, False, reason)
 
     def note(self, action: str, columns: tuple[str, ...] | list[str], reason: str) -> None:
         """Reddetme olmayan bir guard kararini kayda gecirir.

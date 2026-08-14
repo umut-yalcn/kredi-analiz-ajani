@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+from functools import lru_cache
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -199,10 +200,18 @@ def build_agent():
             return "tools"
 
         # Agent cevabi yazmak uzere. Arkasinda veri var mi?
-        basarili, hatali = _basarili_arac_ciktisi_var_mi(state["messages"])
+        basarili, hatali = _basarili_arac_ciktisi_var_mi(mesajlar)
         deneme = state.get("duzeltme_denemesi", 0)
-        if basarili == 0 and hatali > 0 and deneme < MAKS_DUZELTME:
-            return "duzeltme"
+
+        if basarili == 0 and deneme < MAKS_DUZELTME:
+            # Onceden yalnizca hatali > 0 kosuluna bakiliyordu. Yani agent HIC
+            # arac cagirmadan "en riskli grup kamudur" derse ne duzeltmeye
+            # gonderiliyor ne de isaretleniyordu; grafik dogrudan END'e
+            # gidiyordu. Artik cevabin veri hakkinda bir iddia tasiyip
+            # tasimadigina da bakiliyor - selamlama gibi iddiasiz cevaplar
+            # engellenmiyor.
+            if hatali > 0 or _veri_iddiasi_mi(_extract_text(son.content)):
+                return "duzeltme"
         return END
 
     graph = StateGraph(AnalizDurumu)
@@ -274,6 +283,121 @@ def _arac_ciktisi_hata_mi(icerik: str) -> bool:
     return isinstance(veri, dict) and "hata" in veri
 
 
+#: Cevaptan sayi cikarmak icin. Binlik ayraci ve ondalik virgul/nokta kabul eder.
+_SAYI_YAKALA = re.compile(r"-?\d[\d.,]*")
+
+
+def _sayilari_cikar(metin: str) -> list[str]:
+    """Metindeki sayilari normallestirerek dondurur.
+
+    Bicim farki (1.234,56 / 1234.56 / %12,1) karsilastirmayi bozmasin diye
+    ayraclar atilip ondalik noktaya cevrilir.
+    """
+    sonuc = []
+    for ham in _SAYI_YAKALA.findall(metin):
+        t = ham.strip(".,")
+        if not t:
+            continue
+        # Turkce bicim: son ayrac ondalik ayracidir
+        if "," in t and "." in t:
+            t = t.replace(".", "").replace(",", ".") if t.rindex(",") > t.rindex(".")                 else t.replace(",", "")
+        elif "," in t:
+            t = t.replace(",", ".") if len(t.split(",")[-1]) != 3 else t.replace(",", "")
+        try:
+            d = float(t)
+        except ValueError:
+            continue
+        sonuc.append(f"{d:.4f}".rstrip("0").rstrip("."))
+    return sonuc
+
+
+def _dayanakli_degerler(arac_ciktilari: list[str]) -> list[float]:
+    """Arac ciktilarinda gecen tum sayilar (yuzde karsiliklariyla birlikte)."""
+    degerler: list[float] = []
+    for c in arac_ciktilari:
+        for s in _sayilari_cikar(c):
+            d = float(s)
+            degerler.append(d)
+            degerler.append(d * 100)   # 0.6811 -> 68.11 olarak da anilabilir
+    return degerler
+
+
+def _dogrulanmayan_sayilar(cevap: str, arac_ciktilari: list[str]) -> list[str]:
+    """Cevapta gecip arac ciktilarinda BULUNMAYAN sayilar.
+
+    Bagimsiz denetim su acigi gosterdi: dayanak kontrolu yalnizca "basarili bir
+    arac cagrisi var mi" diye bakiyordu. Agent list_columns cagirip ardindan
+    "temerrut orani %98,7" dediginde cevap dayanakli sayiliyordu - alakasiz tek
+    bir basarili cagri, cevaptaki TUM sayilara sinirsiz dayanak sagliyordu.
+
+    Kontrol deterministik: model cagrisi yok, kota yemiyor, keyfi yanlis pozitif
+    uretmiyor. YUVARLAMAYA TOLERANSLI - agent 1403.42'yi "1403" diye yazabilir;
+    cevaptaki sayinin ondalik hassasiyetinde eslesme araniyor.
+
+    Turetilmis degerler (agent'in iki sayidan hesapladigi oran) dogal olarak
+    eslesmeyebilir; bu yuzden ENGELLEYICI degil RAPORLAYICI.
+    """
+    if not cevap:
+        return []
+
+    dayanak = _dayanakli_degerler(arac_ciktilari)
+    dogrulanmayan = []
+    for ham in _sayilari_cikar(cevap):
+        deger = float(ham)
+        if abs(deger) < 10:   # tek/iki haneli sayilar gurultu uretir
+            continue
+        basamak = len(ham.split(".")[1]) if "." in ham else 0
+        if any(round(d, basamak) == deger for d in dayanak):
+            continue
+        dogrulanmayan.append(ham)
+    return dogrulanmayan
+
+
+#: Cevabin veriye dair bir iddia tasiyip tasimadigini anlamak icin kullanilan
+#: alan sozlugu. Selamlama engellenmemeli, ama "en riskli grup kamudur" gibi
+#: rakamsiz bir veri iddiasi da dayanaksiz kalmamali.
+@lru_cache(maxsize=1)
+def _alan_sozlugu() -> tuple[str, ...]:
+    """Kolon adlari + kategorik degerler. Veri iddiasi tespitinde kullanilir."""
+    from .schema import ANALYZABLE_COLUMNS, CATEGORICAL_COLUMNS
+    from .tools import load_analysis_frame
+
+    terimler = {k.replace("_", " ") for k in ANALYZABLE_COLUMNS}
+    terimler |= set(ANALYZABLE_COLUMNS)
+    try:
+        df = load_analysis_frame()
+        for kol in CATEGORICAL_COLUMNS:
+            terimler |= {str(v).lower() for v in df[kol].unique()}
+    except Exception:  # veri yoksa kolon adlariyla yetin
+        pass
+    # Cok kisa terimler ("il") kelime icinde yanlis eslesir; sinir gerekiyor.
+    return tuple(sorted(terimler))
+
+
+def _veri_iddiasi_mi(cevap: str) -> bool:
+    """Cevap, veri hakkinda bir iddia iceriyor mu?
+
+    Selamlama engellenmemeli; ama "en riskli grup kamudur" gibi RAKAMSIZ bir
+    veri iddiasi da dayanaksiz kalmamali. Terimler KELIME SINIRIYLA aranir -
+    aksi halde "il" kolonu "olabilirim" icinde eslesiyordu.
+    """
+    if _SAYI_DESENI.search(cevap):
+        return True
+    kucuk = cevap.lower()
+    for t in _alan_sozlugu():
+        kacis = re.escape(t)
+        # Turkce sondan eklemeli: "kamu" -> "kamudur", "meslek grubu" -> "...na".
+        # Uzun terimlerde son eke izin veriyoruz; kisa terimlerde (il, yas)
+        # vermiyoruz, yoksa "il" kelimesi "ilgili" icinde eslesir.
+        if len(t) >= 4:
+            desen = rf"(?<![a-z0-9ğüşıöç]){kacis}"
+        else:
+            desen = rf"(?<![a-z0-9ğüşıöç]){kacis}(?![a-z0-9ğüşıöç])"
+        if re.search(desen, kucuk):
+            return True
+    return False
+
+
 def _basarili_arac_ciktisi_var_mi(mesajlar: list[Any]) -> tuple[int, int]:
     """Kac arac cagrisinin basarili, kacinin hata dondurdugunu sayar.
 
@@ -315,16 +439,42 @@ def ask(question: str) -> dict[str, Any]:
 
     basarili, hatali = _basarili_arac_ciktisi_var_mi(result["messages"])
 
-    # Kod yolunda dayanak kontrolu. Gozlenen gercek hata: agent olmayan bir
-    # kolon adiyla arac cagirdi, guard reddetti, agent duzeltmek yerine
-    # "1500 satir, 27.500 TL" diye bir cevap uydurdu. Gercekte 4 satir vardi
-    # ve dogru cagri k esiginden reddedilecekti. Bu kontrol modelin iyi
-    # niyetine guvenmez: basarili arac ciktisi yoksa ve cevapta sayi varsa
-    # cevabin dayanaksiz oldugu kullaniciya soylenir.
-    dayanaksiz = basarili == 0 and bool(_SAYI_DESENI.search(answer))
+    # Kod yolunda dayanak kontrolu. Modelin iyi niyetine guvenmez.
+    #
+    # Gozlenen ilk hata: agent olmayan bir kolon adiyla arac cagirdi, guard
+    # reddetti, agent duzeltmek yerine "1500 satir, 27.500 TL" diye bir cevap
+    # uydurdu. Gercekte 4 satir vardi.
+    #
+    # Bagimsiz denetimde ikinci bir acik cikti: kontrol yalnizca "basarili bir
+    # arac cagrisi var mi" diye bakiyordu. Agent list_columns cagirip ardindan
+    # "temerrut orani %98,7" dediginde cevap DAYANAKLI sayiliyordu - alakasiz
+    # tek bir basarili cagri, cevaptaki tum sayilara sinirsiz dayanak
+    # sagliyordu. Artik cevaptaki sayilar arac ciktilariyla karsilastiriliyor.
+    arac_ciktilari = [
+        str(m.content) for m in result["messages"] if isinstance(m, ToolMessage)
+    ]
+    dogrulanmayan = _dogrulanmayan_sayilar(answer, arac_ciktilari)
+
+    cevap_sayilari = [x for x in _sayilari_cikar(answer) if abs(float(x)) >= 10]
+    hicbiri_dayanakli_degil = bool(cevap_sayilari) and len(dogrulanmayan) == len(cevap_sayilari)
+
+    dayanaksiz = (basarili == 0 and _veri_iddiasi_mi(answer)) or hicbiri_dayanakli_degil
     if dayanaksiz:
-        guard.note("cevap_dayanagi", (), f"Basarili arac ciktisi yok ({hatali} hata), cevapta sayi var")
+        guard.note(
+            "cevap_dayanagi",
+            (),
+            f"Dayanaksiz cevap: {basarili} basarili arac ciktisi, "
+            f"{len(dogrulanmayan)} dogrulanmayan sayi",
+        )
         answer = f"{DESTEKSIZ_CEVAP_UYARISI}\n\n{answer}"
+    elif dogrulanmayan:
+        # Kismi uydurma: bazi sayilar dayanakli, bazilari degil. Engellemiyoruz
+        # (turetilmis degerler dogal olarak eslesmeyebilir) ama raporluyoruz.
+        guard.note(
+            "cevap_dayanagi",
+            (),
+            f"Arac ciktilarinda bulunmayan sayilar: {', '.join(dogrulanmayan[:5])}",
+        )
 
     return {
         "soru": question,
@@ -335,4 +485,5 @@ def ask(question: str) -> dict[str, Any]:
         "arac_ozeti": {"basarili": basarili, "hatali": hatali},
         "duzeltme_denemesi": result.get("duzeltme_denemesi", 0),
         "dayanaksiz_cevap": dayanaksiz,
+        "dogrulanmayan_sayilar": dogrulanmayan,
     }

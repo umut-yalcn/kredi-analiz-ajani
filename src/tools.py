@@ -221,25 +221,21 @@ def group_aggregate(
         return _ok({"hata": str(exc)})
 
     if group_by not in CATEGORICAL_COLUMNS:
-        return _ok(
-            {
-                "hata": f"'{group_by}' gruplama icin uygun degil. "
-                f"Kategorik kolonlar: {', '.join(CATEGORICAL_COLUMNS)}"
-            }
-        )
+        mesaj = (f"'{group_by}' gruplama icin uygun degil. "
+                 f"Kategorik kolonlar: {', '.join(CATEGORICAL_COLUMNS)}")
+        get_guard().reddet("group_aggregate", (group_by,), mesaj)
+        return _ok({"hata": mesaj})
 
     # Metrik tipi de dogrulanmali. group_by dogrulaniyordu ama metric
     # dogrulanmiyordu; kategorik bir metrikle mean/sum cagrildiginda pandas
     # ciplak TypeError/ValueError firlatiyor ve bu istisna ajan kosumunu
     # dusuruyordu. 'count' istisna: her tipte anlamli.
     if how != "count" and metric not in NUMERIC_COLUMNS:
-        return _ok(
-            {
-                "hata": f"'{metric}' sayisal degil, '{how}' ile toplulastirilamaz. "
-                f"Sayisal kolonlar: {', '.join(NUMERIC_COLUMNS)}. "
-                f"Kategorik bir kolonun dagilimi icin describe_column kullan."
-            }
-        )
+        mesaj = (f"'{metric}' sayisal degil, '{how}' ile toplulastirilamaz. "
+                 f"Sayisal kolonlar: {', '.join(NUMERIC_COLUMNS)}. "
+                 f"Kategorik bir kolonun dagilimi icin describe_column kullan.")
+        get_guard().reddet("group_aggregate", (metric,), mesaj)
+        return _ok({"hata": mesaj})
 
     df = load_analysis_frame()
     grouped = df.groupby(group_by)[metric]
@@ -299,13 +295,11 @@ def segment_stats(column: str, operator: Literal["<", "<=", ">", ">=", "=="], va
     # gelir nedir?" gibi son derece dogal bir soru bu yola giriyordu.
     for kol, rol in ((column, "filtre"), (metric, "metrik")):
         if kol not in NUMERIC_COLUMNS:
-            return _ok(
-                {
-                    "hata": f"'{kol}' sayisal degil, {rol} olarak kullanilamaz. "
-                    f"Sayisal kolonlar: {', '.join(NUMERIC_COLUMNS)}. "
-                    f"Kategorik kolonlarda gruplama icin group_aggregate kullan."
-                }
-            )
+            mesaj = (f"'{kol}' sayisal degil, {rol} olarak kullanilamaz. "
+                     f"Sayisal kolonlar: {', '.join(NUMERIC_COLUMNS)}. "
+                     f"Kategorik kolonlarda gruplama icin group_aggregate kullan.")
+            get_guard().reddet("segment_stats", (kol,), mesaj)
+            return _ok({"hata": mesaj})
 
     df = load_analysis_frame()
     # Karsilastirmalar tembel kurulur; sozluk hepsini birden degerlendirirse
