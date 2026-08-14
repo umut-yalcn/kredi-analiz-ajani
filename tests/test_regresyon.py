@@ -14,7 +14,8 @@ import threading
 import pytest
 
 from src.config import DATA_PATH
-from src.guard import Guard, K_ANONYMITY_THRESHOLD, gecmisi_temizle
+from src.agent import _dogrulanmayan_sayilar
+from src.guard import Guard, GuardViolation, K_ANONYMITY_THRESHOLD, gecmisi_temizle
 from src.tools import (
     group_aggregate,
     correlation,
@@ -560,3 +561,90 @@ class TestDenetimKaydiEksiksiz:
         set_guard(g)
         _c(describe_column, column="il")
         assert any("k esigini gecti" in e["reason"] for e in g.audit_trail())
+
+
+class TestQwenDenetimi:
+    """Dorduncu bagimsiz denetim (qwen3.7-plus, sifir bilgiyle).
+
+    Denetim yedi bulgu bildirdi; ucu gercek cikti, digerleri ya bilincli
+    tasarim kararlariydi ya da somurulemiyordu. Buradaki testler HEM
+    duzeltilenleri HEM de kasitli davranislari kilitliyor: bir sonraki
+    denetci ayni yerlere takildiginda gerekce kodda yazili olsun.
+    """
+
+    def test_bosluklu_telefon_maskelenir(self):
+        """Maskeleme yalnizca bitisik yazimi taniyordu.
+
+        Model numarayi "+90 555 123 45 67" ya da "(555) 123-4567" diye
+        yazdiginda son savunma hatti sessizce devre disi kaliyordu.
+        """
+        g = Guard()
+        for metin in [
+            "+90 555 123 45 67",
+            "(555) 123-4567",
+            "555-123-45-67",
+            "0 555 123 45 67",
+        ]:
+            assert "[TELEFON_MASKELENDI]" in g.mask(metin), metin
+
+    def test_bitisik_tckn_maskelenir(self):
+        """\b harf/rakam sinirinda bulundugu icin "x12345678901y"
+        maskelenmeden geciyordu."""
+        assert "[TCKN_MASKELENDI]" in Guard().mask("x12345678901y")
+
+    def test_binlik_ayracli_tutar_telefon_sanilmaz(self):
+        """Maskelemeyi genisletirken mesru tutarlari yakmadigimizin kaniti."""
+        assert Guard().mask("Toplam borc 5.000.000.000 TL") == (
+            "Toplam borc 5.000.000.000 TL"
+        )
+
+    def test_carpanli_ifade_dayanak_kontrolunden_kacamaz(self):
+        """"1,4 milyon" yazan cevapta duz tarama yalnizca "1,4" goruyordu;
+        o da 10 esiginin altinda kaldigi icin hic denetlenmiyordu."""
+        ciktilar = ['{"toplam": 1400000}']
+        assert _dogrulanmayan_sayilar("Toplam 1,4 milyon TL.", ciktilar) == []
+        assert _dogrulanmayan_sayilar("Toplam 9 milyon TL.", ciktilar) == ["9 milyon"]
+
+    def test_noktali_binlik_yazim_dayanak_kontrolunden_kacamaz(self):
+        """"1.403.421" float()'ta patlayip sayi SESSIZCE dusuyordu -
+        model rakami boyle yazdiginda uydurma kontrolu hic calismiyordu."""
+        ciktilar = ['{"toplam": 1400000}']
+        assert _dogrulanmayan_sayilar("Toplam 1.403.421 TL.", ciktilar) == ["1403421"]
+        assert _dogrulanmayan_sayilar("Toplam 1.400.000 TL.", ciktilar) == []
+
+    def test_fark_tam_k_kadar_ise_KASITLI_olarak_gecer(self):
+        """Denetim bunu 'off-by-one hatasi' diye bildirdi; hata degil.
+
+        Fark tam K_ANONYMITY_THRESHOLD ise aciga cikan grup K kisilik olur.
+        k-anonimlik tanimi geregi K ve uzeri gruplar zaten serbest; kosulu
+        <= yapmak politikayi sessizce k=21'e cekerdi. Davranis kasitli.
+        """
+        gecmisi_temizle()
+        g = Guard()
+        g.check_overlap("t", "yas|aylik_gelir", 4968)
+        g.check_overlap("t", "yas|aylik_gelir", 4968 + K_ANONYMITY_THRESHOLD)
+
+        gecmisi_temizle()
+        g2 = Guard()
+        g2.check_overlap("t", "yas|aylik_gelir", 4968)
+        with pytest.raises(GuardViolation):
+            g2.check_overlap("t", "yas|aylik_gelir", 4968 + K_ANONYMITY_THRESHOLD - 1)
+
+    def test_farkli_metrik_ayri_gecmis_tutar_ama_ifsa_yolu_yok(self):
+        """Denetim bunu KRITIK bildirdi; olgu dogru, sonuc yanlis.
+
+        Gecmis anahtari "kolon|metrik" oldugu icin farkli metrikli iki sorgu
+        birbirini blokelamaz. Ancak fark alma saldirisi AYNI metrigin iki
+        satir sayisini gerektirir - o da reddediliyor. Iki farkli kolonun
+        ortalamasi arasindaki farktan kimsenin degeri cikmaz.
+
+        Anahtari kolona indirmek olculebilir guvenlik kazanci vermeden mesru
+        sorgularin reddini artiracagi icin bilerek degistirilmedi.
+        """
+        gecmisi_temizle()
+        g = Guard()
+        g.check_overlap("t", "kredi_skoru|aylik_gelir", 4996)
+        g.check_overlap("t", "kredi_skoru|mevcut_borc", 4997)   # farkli anahtar
+
+        with pytest.raises(GuardViolation):
+            g.check_overlap("t", "kredi_skoru|aylik_gelir", 4997)

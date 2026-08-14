@@ -284,7 +284,11 @@ def _arac_ciktisi_hata_mi(icerik: str) -> bool:
 
 
 #: Cevaptan sayi cikarmak icin. Binlik ayraci ve ondalik virgul/nokta kabul eder.
-_SAYI_YAKALA = re.compile(r"-?\d[\d.,]*")
+_SAYI_YAKALA = re.compile(r"(?<![A-Za-z0-9])-?\d[\d.,]*")
+#: Lookbehind sart: "AUTH-9204" gibi kontrol kimliklerinde tire eksi
+#: isareti sanilip sayi "-9204" olarak okunuyordu. Dayanak kontrolu o
+#: uydurma negatif degeri arac ciktisinda da bulup eslestirdigi icin
+#: koruma zayifliyordu.
 
 
 def _sayilari_cikar(metin: str) -> list[str]:
@@ -306,7 +310,17 @@ def _sayilari_cikar(metin: str) -> list[str]:
         try:
             d = float(t)
         except ValueError:
-            continue
+            # "1.403.421" gibi noktali binlik yazim float()'ta patliyor ve sayi
+            # SESSIZCE dusuyordu: model rakami boyle yazdiginda dayanak
+            # kontrolunden hic gecmiyordu. Noktalar binlik ayraci olarak
+            # yorumlanip yeniden deneniyor.
+            if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", t):
+                try:
+                    d = float(t.replace(".", ""))
+                except ValueError:
+                    continue
+            else:
+                continue
         sonuc.append(f"{d:.4f}".rstrip("0").rstrip("."))
     return sonuc
 
@@ -320,6 +334,25 @@ def _dayanakli_degerler(arac_ciktilari: list[str]) -> list[float]:
             degerler.append(d)
             degerler.append(d * 100)   # 0.6811 -> 68.11 olarak da anilabilir
     return degerler
+
+
+#: "1,4 milyon" gibi ifadelerde carpani cozmek icin. Sadece Turkce yazimlar;
+#: modelin cevabi Turkce uretmesi sistem prompt'unda zorunlu.
+_CARPANLAR = {"bin": 1e3, "milyon": 1e6, "milyar": 1e9}
+_CARPANLI_SAYI = re.compile(
+    r"(-?\d[\d.,]*)\s*(bin|milyon|milyar)\b", re.IGNORECASE
+)
+
+
+def _carpanli_sayilar(metin: str) -> list[tuple[str, float]]:
+    """'1,4 milyon' -> [('1,4 milyon', 1400000.0)] seklinde cozer."""
+    sonuc: list[tuple[str, float]] = []
+    for eslesme in _CARPANLI_SAYI.finditer(metin):
+        ham, kelime = eslesme.group(1), eslesme.group(2)
+        sayilar = _sayilari_cikar(ham)
+        if sayilar:
+            sonuc.append((eslesme.group(0), float(sayilar[0]) * _CARPANLAR[kelime.lower()]))
+    return sonuc
 
 
 def _dogrulanmayan_sayilar(cevap: str, arac_ciktilari: list[str]) -> list[str]:
@@ -342,12 +375,32 @@ def _dogrulanmayan_sayilar(cevap: str, arac_ciktilari: list[str]) -> list[str]:
 
     dayanak = _dayanakli_degerler(arac_ciktilari)
     dogrulanmayan = []
-    for ham in _sayilari_cikar(cevap):
+
+    # Carpanli ifadeler ONCE ayikleniyor: "1,4 milyon" yazan bir cevapta duz
+    # tarama yalnizca "1,4" goruyor, o da 10 esiginin altinda kaldigi icin hic
+    # denetlenmiyordu - modelin buyuk rakamlari boyle yazmasi olagan oldugundan
+    # uydurma kontrolunde kor nokta olusuyordu.
+    kalan = cevap
+    for etiket, deger in _carpanli_sayilar(cevap):
+        kalan = kalan.replace(etiket, " ", 1)
+        # Ifade zaten yuvarlama: 1.403.421 -> "1,4 milyon". Bu yuzden esleme
+        # binde bes bagil toleransla araniyor, tam esitlikle degil.
+        tolerans = max(1.0, abs(deger) * 0.005)
+        if any(abs(d - deger) <= tolerans for d in dayanak):
+            continue
+        dogrulanmayan.append(etiket)
+
+    for ham in _sayilari_cikar(kalan):
         deger = float(ham)
         if abs(deger) < 10:   # tek/iki haneli sayilar gurultu uretir
             continue
         basamak = len(ham.split(".")[1]) if "." in ham else 0
-        if any(round(d, basamak) == deger for d in dayanak):
+        # round() ile tam esitlik ASIMETRIKTI: arac 1403.9 dondurdugunde
+        # cevaptaki "1404" (yuvarlama) geciyor, "1403" (kirpma) uydurma
+        # damgasi yiyordu. Ikisi de mesru yazim; son basamak genisliginde
+        # tolerans araniyor.
+        tolerans = 10.0 ** (-basamak)
+        if any(abs(d - deger) < tolerans for d in dayanak):
             continue
         dogrulanmayan.append(ham)
     return dogrulanmayan

@@ -187,12 +187,28 @@ class Guard:
 
     # --- 3. PII maskeleme ------------------------------------------------
 
+    #: Rakam gruplari arasinda ayrac olabilir: model numarayi "+90 555 123 45 67"
+    #: ya da "(555) 123-4567" diye yazdiginda eski desen HIC eslesmiyordu.
+    #: Ayraclar 0-2 karakterle sinirli ve ilk uclu grup (5XX) BITISIK isteniyor;
+    #: bu, binlik ayracli mesru tutarlarin ("5.000.000.000") telefon sanilmasini
+    #: engelliyor - orada 5'ten sonra rakam degil ayrac geliyor.
+    _AYRAC = r"[\s\-.()]{0,2}"
+
     _PII_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-        ("TCKN", re.compile(r"\b[1-9][0-9]{10}\b")),
+        # \b yerine rakam-olmayan lookaround: \b harf/rakam sinirinda bulundugu
+        # icin "x12345678901y" gibi bitisik yazimda TCKN maskelenmeden geciyordu.
+        ("TCKN", re.compile(r"(?<![0-9])[1-9][0-9]{10}(?![0-9])")),
         # Bastaki \b yerine rakam-olmayan lookbehind kullaniliyor. \b, dizgenin
         # basinda "+" onunde sinir bulamadigi icin "+905551234567" HIC
         # eslesmiyordu - uluslararasi formattaki numara maskelemeden siziyordu.
-        ("TELEFON", re.compile(r"(?<![0-9])(?:\+90|0)?5[0-9]{9}(?![0-9])")),
+        (
+            "TELEFON",
+            re.compile(
+                r"(?<![0-9])(?:(?:\+?90|0)" + _AYRAC + r")?5[0-9]{2}"
+                + _AYRAC + r"[0-9]{3}" + _AYRAC + r"[0-9]{2}"
+                + _AYRAC + r"[0-9]{2}(?![0-9])"
+            ),
+        ),
         ("EMAIL", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b")),
     )
 
