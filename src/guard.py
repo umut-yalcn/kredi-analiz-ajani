@@ -225,7 +225,17 @@ class Guard:
     _PII_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         # \b yerine rakam-olmayan lookaround: \b harf/rakam sinirinda bulundugu
         # icin "x12345678901y" gibi bitisik yazimda TCKN maskelenmeden geciyordu.
-        ("TCKN", re.compile(r"(?<![0-9])[1-9][0-9]{10}(?![0-9])")),
+        # TCKN de ayrac toleransli. Telefonda tolerans vardi, TCKN'de yoktu:
+        # ayni katmanin kendi ilkesi ("yanlis pozitif zararsiz, yanlis
+        # negatif yikici") TCKN'de uygulanmiyordu. Olculdu:
+        # "123 456 789 01" ve "12345-678901" maskelenmeden geciyordu.
+        # Toplam rakam sayisi TAM 11 tutuluyor.
+        (
+            "TCKN",
+            re.compile(
+                r"(?<![0-9])[1-9](?:" + _AYRAC + r"[0-9]){10}(?![0-9])"
+            ),
+        ),
         # Bastaki \b yerine rakam-olmayan lookbehind kullaniliyor. \b, dizgenin
         # basinda "+" onunde sinir bulamadigi icin "+905551234567" HIC
         # eslesmiyordu - uluslararasi formattaki numara maskelemeden siziyordu.

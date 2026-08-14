@@ -51,6 +51,9 @@ class AskResponse(BaseModel):
     # makine-okunur degildi - yalnizca cevap metnindeki [DAYANAKSIZ CEVAP]
     # onekiyle anlasilabiliyordu. Kardes projede response_model yok ve her sey
     # donuyordu; iki API arasinda tutarsizlik vardi.
+    # dogrulanmayan_sayilar da KIRPILIYORDU: README "gecmeyenler bu alanda
+    # raporlanir" derken HTTP tuketicisi alani hic gormuyordu.
+    dogrulanmayan_sayilar: list[str] = Field(default_factory=list)
     arac_ozeti: dict[str, int] = Field(
         default_factory=dict,
         description="Kac arac cagrisi basarili, kaci hata dondurdu.",

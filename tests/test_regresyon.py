@@ -696,3 +696,60 @@ class TestOpus5Denetimi:
         set_guard(g)
         _c(describe_column, column="aylik_gelir")
         assert any("k kontrolu gecildi" in e["reason"] for e in g.audit_trail())
+
+    def test_kucuk_sayilar_da_denetlenir(self):
+        """Uydurma tespiti mutlak degeri 10'dan kucuk her sayiyi ATLIYORDU.
+
+        Kredi riskinde raporlanan buyukluklerin cogu bu araliktadir: temerrut
+        oranlari, korelasyon katsayilari, ortalama kredi sayisi. Tamami kucuk
+        sayilardan olusan uydurma bir cevap hicbir kontrole takilmiyordu.
+        """
+        ciktilar = ['{"kolon_sayisi": 12}']
+        assert _dogrulanmayan_sayilar(
+            "Temerrut orani %7,3; korelasyon 0,42.", ciktilar
+        ) == ["7.3", "0.42"]
+
+    def test_yuz_kati_sahte_dayanak_uretmez(self):
+        """_dayanakli_degerler her sayinin 100 katini da dayanak sayiyordu:
+        arac 'satir_sayisi 5000' derse cevaptaki uydurma 500000 dayanakli
+        oluyordu."""
+        assert _dogrulanmayan_sayilar("Toplam 500000 TL.", ['{"satir_sayisi": 5000}']) == ["500000"]
+
+    def test_oran_yuzde_donusumu_hala_kabul_edilir(self):
+        """x100 kaldirilirken mesru oran -> yuzde yazimi bozulmamali;
+        yalnizca % isareti VARKEN ve tek yonlu kabul ediliyor."""
+        assert _dogrulanmayan_sayilar("Onay orani %68,11.", ['{"oran": 0.6811}']) == []
+
+    def test_ayracli_tckn_maskelenir(self):
+        """Telefonda ayrac toleransi vardi, TCKN'de yoktu; ayni katmanin
+        kendi ilkesi ('yanlis negatif yikici') TCKN'de uygulanmiyordu."""
+        g = Guard()
+        for metin in ["123 456 789 01", "12345-678901", "123.456.789.01"]:
+            assert "[TCKN_MASKELENDI]" in g.mask(metin), metin
+
+    def test_tanimsiz_korelasyon_guclu_negatif_demez(self):
+        """abs(nan) hicbir esikten kucuk degil, nan > 0 da False: tanimsiz r
+        SESSIZCE 'guclu negatif' oluyordu. Sayi olmadigi icin dayanak
+        kontrolu de yakalayamiyordu."""
+        import src.tools as T
+
+        df = load_analysis_frame().copy()
+        df["vade_ay"] = 24
+        orijinal = T.load_analysis_frame
+        T.load_analysis_frame = lambda: df
+        try:
+            set_guard(Guard())
+            r = _c(correlation, column_a="vade_ay", column_b="aylik_gelir")
+        finally:
+            T.load_analysis_frame = orijinal
+        assert "hata" in r
+        assert r.get("guc") is None and r.get("yon") is None
+
+    def test_rate_ikili_olmayan_kolonda_reddedilir(self):
+        """'rate' 0/1 kolonlar icindir; kod bunu hic dogrulamiyor, ikili
+        olmayan kolonda ortalamayi 'rate' etiketiyle donduruyordu."""
+        set_guard(Guard())
+        red = _c(group_aggregate, group_by="meslek_grubu", metric="aylik_gelir", how="rate")
+        assert "hata" in red
+        ok = _c(group_aggregate, group_by="meslek_grubu", metric="temerrut", how="rate")
+        assert "hata" not in ok and ok["sonuc"]

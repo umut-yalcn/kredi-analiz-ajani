@@ -326,14 +326,33 @@ def _sayilari_cikar(metin: str) -> list[str]:
 
 
 def _dayanakli_degerler(arac_ciktilari: list[str]) -> list[float]:
-    """Arac ciktilarinda gecen tum sayilar (yuzde karsiliklariyla birlikte)."""
+    """Arac ciktilarinda gecen sayilar.
+
+    x100 KARSILIKLARI ARTIK KOSULSUZ EKLENMIYOR. Her sayinin 100 kati da
+    dayanak sayilinca, arac ciktisindaki herhangi bir sayinin 100 kati cevapta
+    serbestce uydurulabiliyordu: "5000 satir" bilgisi uydurma "500.000 TL"
+    rakamini dayanakli kiliyordu (olculdu). Oran -> yuzde donusumu artik
+    yalnizca cevapta % isareti varken ve TEK YONLU uygulaniyor.
+    """
     degerler: list[float] = []
     for c in arac_ciktilari:
         for s in _sayilari_cikar(c):
-            d = float(s)
-            degerler.append(d)
-            degerler.append(d * 100)   # 0.6811 -> 68.11 olarak da anilabilir
+            degerler.append(float(s))
     return degerler
+
+
+#: Cevapta yuzde olarak yazilmis sayilari yakalar: "%68,11" ya da "68,11%".
+_YUZDE_DESENI = re.compile(r"%\s*(\d[\d.,]*)|(\d[\d.,]*)\s*%")
+
+
+def _yuzde_sayilari(cevap: str) -> set[str]:
+    """Cevapta yuzde isaretiyle yazilmis sayilarin normallestirilmis hali."""
+    bulunan: set[str] = set()
+    for a, b in _YUZDE_DESENI.findall(cevap or ""):
+        for ham in (a, b):
+            if ham:
+                bulunan.update(_sayilari_cikar(ham))
+    return bulunan
 
 
 #: "1,4 milyon" gibi ifadelerde carpani cozmek icin. Sadece Turkce yazimlar;
@@ -390,17 +409,31 @@ def _dogrulanmayan_sayilar(cevap: str, arac_ciktilari: list[str]) -> list[str]:
             continue
         dogrulanmayan.append(etiket)
 
+    yuzdeler = _yuzde_sayilari(cevap)
     for ham in _sayilari_cikar(kalan):
         deger = float(ham)
-        if abs(deger) < 10:   # tek/iki haneli sayilar gurultu uretir
-            continue
+        # ONCEDEN mutlak degeri 10'dan kucuk her sayi ATLANIYORDU. Kredi
+        # riskinde raporlanan buyukluklerin cogu bu araliktadir: temerrut
+        # oranlari (%7,3), korelasyon katsayilari (0,42), ortalama aktif
+        # kredi sayisi (1,8). Tamami kucuk sayilardan olusan uydurma bir
+        # cevap hicbir kontrole takilmiyordu (olculdu). Esik kaldirildi;
+        # gurultuyu bastirmak icin BAGIL tolerans kullaniliyor.
         basamak = len(ham.split(".")[1]) if "." in ham else 0
         # round() ile tam esitlik ASIMETRIKTI: arac 1403.9 dondurdugunde
         # cevaptaki "1404" (yuvarlama) geciyor, "1403" (kirpma) uydurma
         # damgasi yiyordu. Ikisi de mesru yazim; son basamak genisliginde
         # tolerans araniyor.
+        # Tolerans SON BASAMAK genisliginde. Bagil tolerans denendi ve
+        # geri alindi: %0.5 bagil pay, 1.400.000 dayanagina karsi uydurma
+        # 1.403.421'i kabul ediyordu - buyuk sayilarda fazla comert.
         tolerans = 10.0 ** (-basamak)
         if any(abs(d - deger) < tolerans for d in dayanak):
+            continue
+        # Oran -> yuzde: arac 0.6811 dondurup cevap "%68,11" diyorsa bu
+        # mesru. Yalnizca % isareti VARKEN ve tek yonlu.
+        if ham in yuzdeler and any(
+            abs(d * 100 - deger) < tolerans for d in dayanak
+        ):
             continue
         dogrulanmayan.append(ham)
     return dogrulanmayan
@@ -508,7 +541,7 @@ def ask(question: str) -> dict[str, Any]:
     ]
     dogrulanmayan = _dogrulanmayan_sayilar(answer, arac_ciktilari)
 
-    cevap_sayilari = [x for x in _sayilari_cikar(answer) if abs(float(x)) >= 10]
+    cevap_sayilari = _sayilari_cikar(answer)
     hicbiri_dayanakli_degil = bool(cevap_sayilari) and len(dogrulanmayan) == len(cevap_sayilari)
 
     dayanaksiz = (basarili == 0 and _veri_iddiasi_mi(answer)) or hicbiri_dayanakli_degil

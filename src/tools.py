@@ -262,6 +262,24 @@ def group_aggregate(
     sizes = grouped.count().to_dict()
     suppressed = get_guard().check_group_sizes("group_aggregate", sizes)
 
+    # "rate" 0/1 kolonlar icin oran demek; kod bunu HIC dogrulamiyordu ve
+    # ikili olmayan bir kolonda sessizce ortalamayi "rate" etiketiyle
+    # donduruyordu (meslek grubuna gore "oran" 46595.17 gibi). Model bunu
+    # yuzde diye sunabilir.
+    if how == "rate":
+        benzersiz = set(df[metric].dropna().unique())
+        if not benzersiz <= {0, 1, 0.0, 1.0, True, False}:
+            get_guard().reddet(
+                "group_aggregate",
+                (metric,),
+                f"'{metric}' ikili bir kolon degil; 'rate' uygulanamaz",
+            )
+            return _ok({
+                "hata": f"'{metric}' 0/1 degerli bir kolon degil. 'rate' yalnizca "
+                        "ikili kolonlar icin oran hesaplar; ortalama istiyorsan "
+                        "how='mean' kullan.",
+            })
+
     result = grouped.mean() if how == "rate" else getattr(grouped, how)()
     result = result.drop(index=suppressed, errors="ignore").dropna()
 
@@ -443,6 +461,20 @@ def correlation(column_a: str, column_b: str) -> str:
         yorum = "orta"
     else:
         yorum = "guclu"
+
+    # Tanimsiz r SESSIZCE "guclu negatif" oluyordu: abs(nan) hicbir esikten
+    # kucuk degil, nan > 0 da False. pearson_r JSON'da null'a cevriliyordu ama
+    # yorum alanlari coktan hesaplanmisti; model bunu okuyup "guclu negatif
+    # iliski var" diyebiliyordu ve sayi olmadigi icin dayanak kontrolu de
+    # yakalayamiyordu.
+    if not math.isfinite(r):
+        return _ok(
+            {
+                "kolonlar": [column_a, column_b],
+                "hata": "Kolonlardan birinin varyansi sifir; Pearson r tanimsiz.",
+                "kullanilan_satir_sayisi": len(cift),
+            }
+        )
 
     return _ok(
         {
