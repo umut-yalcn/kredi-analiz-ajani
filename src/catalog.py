@@ -105,7 +105,13 @@ def build_catalog(force: bool = False) -> int:
     icin bir sebep yok.
     """
     collection = _collection()
-    if collection.count() > 0 and not force:
+    beklenen = sum(1 for c in CREDIT_APPLICATION_SCHEMA if c.analyzable)
+
+    # Onceden "tek kayit bile varsa katalog tamamdir" varsayiliyordu. Kesilmis
+    # bir ilk kurulum ya da degismis bir sema, aramaya hic yansimiyordu -
+    # schema.py "tek gercek kaynak" olsa da Chroma ondan kalici olarak
+    # sapabiliyordu. Artik BEKLENEN sayiyla karsilastiriliyor.
+    if collection.count() == beklenen and not force:
         return collection.count()
 
     if force and collection.count() > 0:

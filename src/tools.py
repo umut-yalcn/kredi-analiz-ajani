@@ -71,6 +71,16 @@ def _json_guvenli(deger: Any) -> Any:
     kullandigi icin NaN uretmiyor; kontrol, ileride bir kolon uretirse
     sessizce bozuk JSON cikmasin diye burada duruyor.
     """
+    # numpy skalerleri ve pandas'in NA'si Python float/int DEGILDIR; onceden
+    # bu dallarin hicbirine girmiyor ve json.dumps'ta TypeError uretiyorlardi.
+    # Mevcut veriyle tetiklenmiyor ama bozuk/yeni bir hesap uretebilir.
+    if deger is pd.NA or deger is pd.NaT:
+        return None
+    if hasattr(deger, "item") and hasattr(deger, "dtype"):
+        try:
+            deger = deger.item()   # numpy skaleri -> Python tipi
+        except (ValueError, AttributeError):
+            return str(deger)
     if isinstance(deger, float):
         return None if (math.isnan(deger) or math.isinf(deger)) else deger
     if isinstance(deger, dict):
