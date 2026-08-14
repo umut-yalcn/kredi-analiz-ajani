@@ -316,6 +316,12 @@ class TestVeriYolu:
 
 
 class TestFarkAlmaSaldirisi:
+    # Esik 1893 -> 942 olarak degisti: 1893 veri setinin neredeyse
+    # tamamini seciyordu ve artik TUMLEYEN kontrolune takiliyor (tek
+    # sorguyla tumleyen toplamindan birey cikarilabiliyordu). 1030 ayni
+    # fark alma senaryosunu kurar - n=60 ve n=61 - ama tumleyeni genis
+    # birakir, yani test hala FARK ALMA savunmasini olcuyor.
+
     """Bagimsiz denetimde bulundu: k-anonimlik fark alma saldirisina acikti.
 
     Iki AYRI sorgu da k esigini geciyordu ama aralarindaki fark tek kisiydi.
@@ -327,9 +333,9 @@ class TestFarkAlmaSaldirisi:
     def test_ardisik_dar_farkli_sorgu_reddedilir(self):
         g = Guard()
         set_guard(g)
-        r1 = _c(segment_stats, column="kredi_skoru", operator="<", value=1893.0,
+        r1 = _c(segment_stats, column="kredi_skoru", operator="<", value=1030.0,
                 metric="aylik_gelir")
-        r2 = _c(segment_stats, column="kredi_skoru", operator="<=", value=1893.0,
+        r2 = _c(segment_stats, column="kredi_skoru", operator="<=", value=1030.0,
                 metric="aylik_gelir")
         assert "hata" not in r1, "ilk genis sorgu calismali"
         assert "hata" in r2, "tek kisilik fark reddedilmeli"
@@ -337,9 +343,9 @@ class TestFarkAlmaSaldirisi:
 
     def test_reddedilen_sorgu_deger_sizdirmaz(self):
         set_guard(Guard())
-        _c(segment_stats, column="kredi_skoru", operator="<", value=1893.0,
+        _c(segment_stats, column="kredi_skoru", operator="<", value=1030.0,
            metric="aylik_gelir")
-        r2 = _c(segment_stats, column="kredi_skoru", operator="<=", value=1893.0,
+        r2 = _c(segment_stats, column="kredi_skoru", operator="<=", value=1030.0,
                 metric="aylik_gelir")
         for alan in ("ortalama", "medyan", "gozlemlenen_satir", "genel_ortalama"):
             assert alan not in r2
@@ -363,19 +369,19 @@ class TestFarkAlmaSaldirisi:
 
         gecmisi_temizle()
         set_guard(Guard())
-        ilk = _c(segment_stats, column="kredi_skoru", operator="<", value=1893.0,
+        ilk = _c(segment_stats, column="kredi_skoru", operator="<", value=1030.0,
                  metric="aylik_gelir")
         assert "hata" not in ilk
 
         for _ in range(GECMIS_SINIRI + 50):
-            _c(segment_stats, column="kredi_skoru", operator="<", value=942.0,
+            _c(segment_stats, column="kredi_skoru", operator="<", value=1030.0,
                metric="aylik_gelir")
 
         gecmis = _SORGU_GECMISI["kredi_skoru|aylik_gelir"]
         assert ilk["gozlemlenen_satir"] in gecmis, "koruyucu kayit gecmisten dusmus"
         assert len(gecmis) <= GECMIS_SINIRI
 
-        sonra = _c(segment_stats, column="kredi_skoru", operator="<=", value=1893.0,
+        sonra = _c(segment_stats, column="kredi_skoru", operator="<=", value=1030.0,
                    metric="aylik_gelir")
         assert "hata" in sonra, "taskin sonrasi saldiri gecti"
 
@@ -386,9 +392,9 @@ class TestFarkAlmaSaldirisi:
 
         gecmisi_temizle()
         set_guard(Guard())
-        ilk = _c(segment_stats, column="kredi_skoru", operator="<", value=1893.0,
+        ilk = _c(segment_stats, column="kredi_skoru", operator="<", value=1030.0,
                  metric="aylik_gelir")
-        red = _c(segment_stats, column="kredi_skoru", operator="<=", value=1893.0,
+        red = _c(segment_stats, column="kredi_skoru", operator="<=", value=1030.0,
                  metric="aylik_gelir")
         assert "hata" in red
         assert str(ilk["gozlemlenen_satir"]) not in red["hata"]
@@ -648,3 +654,45 @@ class TestQwenDenetimi:
 
         with pytest.raises(GuardViolation):
             g.check_overlap("t", "kredi_skoru|aylik_gelir", 4997)
+
+
+class TestOpus5Denetimi:
+    """Besinci bagimsiz denetim (Opus 5, sifir bilgiyle) - kanitli bulgular."""
+
+    def test_tumleyen_kume_ile_birey_cikarilamaz(self):
+        """KRITIK, olculdu: tek sorguyla bir kisinin geliri 2 kurus hatayla
+        cikarildi ve guard TEK BIR RET vermedi.
+
+        segment_stats ayni yanitta ortalama, genel_ortalama ve toplam satir
+        sayisini birlikte donduruyordu:
+            N * genel_ortalama - n * ortalama = tumleyenin toplami
+        Tumleyen tek kisiyse o kisinin degeri KESIN cikar. Fark alma savunmasi
+        devreye girmiyordu cunku saldiri iki sorgu degil, BIR sorgu.
+        Olculen: cikarilan 410899.98 / gercek 410900.0.
+        """
+        gecmisi_temizle()
+        set_guard(Guard())
+        df = load_analysis_frame()
+        tepe = float(df["mevcut_borc"].max())
+        assert int((df["mevcut_borc"] == tepe).sum()) == 1, "senaryo tek kisilik tepe ister"
+
+        r = _c(segment_stats, column="mevcut_borc", operator="<", value=tepe,
+               metric="aylik_gelir")
+        assert "hata" in r, "tumleyeni tek kisi olan sorgu REDDEDILMELI"
+        assert "ortalama" not in r and "genel_ortalama" not in r
+
+    def test_tumleyen_genisse_sorgu_calisir(self):
+        """Tumleyen kontrolu mesru genis sorgulari bozmamali."""
+        gecmisi_temizle()
+        set_guard(Guard())
+        r = _c(segment_stats, column="yas", operator=">", value=40.0,
+               metric="mevcut_borc")
+        assert "hata" not in r and r["satir_sayisi"] > 20
+
+    def test_describe_column_sayisal_dalda_k_uygulanir(self):
+        """Sayisal dalda ortalama/std/ceyreklikler hicbir esige tabi degildi;
+        degismez veriye degil koda baglanmaliydi."""
+        g = Guard()
+        set_guard(g)
+        _c(describe_column, column="aylik_gelir")
+        assert any("k kontrolu gecildi" in e["reason"] for e in g.audit_trail())

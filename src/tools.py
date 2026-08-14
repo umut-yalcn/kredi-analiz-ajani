@@ -139,6 +139,12 @@ def describe_column(column: str) -> str:
 
     if column in NUMERIC_COLUMNS:
         gozlem = series.dropna()
+        # k kontrolu SAYISAL dalda da yapiliyor. Onceden yalnizca min/max
+        # deger bazli bastiriliyordu; ortalama, std ve bes ceyreklik hicbir
+        # esige tabi degildi. Az gozlemli bir kolonda bu istatistikler
+        # bireyleri yeniden kurmaya yeter. Degismez ("k'dan az satira dayanan
+        # hicbir toplulastirma donmez") veriye degil KODA baglanmali.
+        get_guard().check_row_count("describe_column", int(gozlem.count()))
         q = gozlem.quantile([0.05, 0.25, 0.5, 0.75, 0.95])
 
         # Uc degerler k-anonimlige tabidir. Bir kolonun en yuksek degeri tek bir
@@ -334,7 +340,7 @@ def segment_stats(column: str, operator: Literal["<", "<=", ">", ">=", "=="], va
     # ("bu kosula 1 kisi uyuyor") k kontrolunden gecmeden disari cikiyordu.
     # Filtrenin kac kisiyi sectigi de basli basina bir bilgidir.
     try:
-        get_guard().check_row_count("segment_stats", len(subset))
+        get_guard().check_row_count("segment_stats", len(subset), toplam=len(df))
         # Fark alma savunmasi: ayni kolon uzerindeki onceki sorgularla
         # arasindaki fark k'dan azsa reddedilir.
         get_guard().check_overlap("segment_stats", f"{column}|{metric}", len(subset))
@@ -346,7 +352,7 @@ def segment_stats(column: str, operator: Literal["<", "<=", ">", ">=", "=="], va
     observed = subset[metric].dropna()
 
     try:
-        get_guard().check_row_count("segment_stats", len(observed))
+        get_guard().check_row_count("segment_stats", len(observed), toplam=len(df))
     except GuardViolation as exc:
         return _ok({"hata": str(exc)})
 

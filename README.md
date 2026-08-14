@@ -60,7 +60,8 @@ yapar. Guard reddederse hatayı görür ve planını değiştirir.
 Altı bağımsız savunma, üst üste:
 
 **1. PII veriye hiç yüklenmez.** `load_analysis_frame()` kişisel veri kolonlarını
-CSV'den okur okumaz düşürür. Analiz katmanının belleğinde o veri hiç bulunmaz.
+CSV'den **hiç okumaz**: `pd.read_csv(..., usecols=ANALYZABLE_COLUMNS)` ile o
+kolonlar diskten belleğe alınmaz. Analiz katmanında o veri hiçbir an bulunmaz.
 Ajan hatalı bir sorgu üretse bile ortada sızdıracak bir şey yoktur.
 
 **2. Kolon izni.** Her araç çağrısı, istenen kolonların analize açık olduğunu
@@ -69,8 +70,16 @@ doğrular. PII kolon talebi hata döner — ajan bunu görür ve planını deği
 **3. k-anonimlik (k=20).** 20 satırdan az veriye dayanan hiçbir toplulaştırma
 döndürülmez.
 
+Koruma iki yönlü: hem seçilen kümenin hem de **tümleyeninin** en az k kişi
+olması gerekiyor. Tek yönlü olsaydı, veri setinin neredeyse tamamını seçen bir
+sorgu `N·genel_ortalama − n·ortalama` ile dışarıda kalan tek kişinin değerini
+verirdi — bağımsız bir denetim bunu ölçtü (çıkarılan 410.899,98 / gerçek
+410.900,00, tek sorgu, guard'dan tek ret almadan). Açık kapatıldı ve testle
+kilitlendi.
+
 Tek bir sorgunun eşiği geçmesi yetmiyor — bunu bağımsız bir denetimde öğrendik.
 İki *ayrı* sorgu da eşiği geçebilir ama aralarındaki fark tek kişi olabilir:
+
 
 ```
 kredi_skoru <  1893  →  4996 satır, ortalama X
@@ -89,7 +98,21 @@ ilk düzeltme yalnızca istek içinde koruyordu ve saldırgan iki sorguyu iki ay
 isteğe bölerek aynı değeri yine çıkarabiliyordu. Bu da ölçüldü.
 
 Meşru analiz engellenmiyor: kademeli eşik taramaları, risk merdivenleri ve yaş
-grubu kırılımları test edildi, hiçbiri bloklanmıyor.
+grubu kırılımları test edildi, kaba taramalar bloklanmıyor.
+
+> **Ölçülen sınır — dürüst kayıt.** Bağımsız bir denetim, 10'ar puanlık *ince*
+> bir risk merdiveninde 21 meşru sorgudan 8'inin bloklandığını ölçtü. Geçmiş
+> süreç genelinde tutulduğu ve süresi dolmadığı için bu etki birikimli: bir
+> kullanıcının taraması diğerlerini de etkiliyor. Doğru çözüm geçmişi
+> oturum/kullanıcı bazında ayırmak ve TTL vermek — ama kimlik doğrulaması
+> olmayan bir API'de oturum bazlı ayrım, saldırganın her sorgu için yeni
+> oturum açmasına ve kapatılan fark alma açığının geri gelmesine yol açardı.
+> Kapsam dışı bırakıldı, gizlenmedi.
+>
+> Aynı denetim, kabul/ret bitinin kendisinin bir yan kanal olduğunu da gösterdi:
+> saldırgan kendi sorgu boyutlarını birbirinden ≥k uzak seçerek tarama yapıp
+> başka bir kullanıcının sorgu boyutunu daraltabiliyor. Bu da kimlik doğrulaması
+> gerektiren aynı kök nedene bağlı.
 
 **Sınırı açıkça söyleyelim:** koruma tek süreç içinde geçerli. Birden fazla
 uvicorn worker'ı ya da yeniden başlatma geçmişi sıfırlar. Gerçek bir kurulumda
@@ -188,7 +211,7 @@ döner. Sistemin ne yaptığı ve neyi neden reddettiği izlenebilir.
 Koruma katmanını doğrulamak için **API anahtarı gerekmez.** İki yol var:
 
 ```bash
-pytest tests/ -q              # 109 passed
+pytest tests/ -q              # 119 passed
 python scripts/demo_guard.py  # korumaları canlı gösterir
 ```
 

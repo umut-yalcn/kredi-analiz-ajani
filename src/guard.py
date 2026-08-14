@@ -109,7 +109,9 @@ class Guard:
         )
         return suppressed
 
-    def check_row_count(self, action: str, n_rows: int) -> None:
+    def check_row_count(
+        self, action: str, n_rows: int, toplam: int | None = None
+    ) -> None:
         """Filtre sonucu cok daralmissa tekil kisiye inilebilir; bunu engelle.
 
         Basarili kontrol de kayda gecer: denetim kaydi "her guard karari"
@@ -124,6 +126,32 @@ class Guard:
                 "satir gerekiyor, aksi halde sonuc tek bir kisiye indirgenebilir. "
                 "Filtreyi genislet."
             )
+        # TUMLEYEN KONTROLU. Alt kume buyuk olsa bile TUMLEYENI tek kisi
+        # olabilir. Ayni yanitta ortalama, genel_ortalama ve toplam satir
+        # sayisi birlikte donduguu icin
+        #     N * genel_ortalama - n * ortalama
+        # tumleyenin toplamini verir; tumleyen tek kisiyse o kisinin degeri
+        # KESIN olarak cikar. Olculdu: cikarilan 410899.98, gercek 410900.0 -
+        # tek sorguyla, guard'dan tek bir ret almadan. Fark alma savunmasi
+        # devreye girmiyordu cunku saldiri iki sorgu degil, BIR sorgu.
+        if toplam is not None:
+            tumleyen = toplam - n_rows
+            if 0 < tumleyen < K_ANONYMITY_THRESHOLD:
+                self._record(
+                    action, (), False,
+                    f"Tumleyen kume cok dar: {tumleyen} satir",
+                )
+                raise GuardViolation(
+                    f"Bu filtre veri setinin neredeyse tamamini seciyor; disarida "
+                    f"{K_ANONYMITY_THRESHOLD} kisiden az kaliyor. Genel ortalama ile "
+                    "karsilastirildiginda disarida kalanlarin degerleri cikarilabilir. "
+                    "Filtreyi daralt."
+                )
+            self._record(
+                action, (), True,
+                f"Tumleyen kontrolu gecildi: {tumleyen} satir",
+            )
+
         self._record(action, (), True, f"k kontrolu gecildi: {n_rows} satir")
 
     # --- 2b. Fark alma (differencing) savunmasi ------------------------------
