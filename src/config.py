@@ -100,7 +100,14 @@ def get_llm(temperature: float = 0.0) -> BaseChatModel:
                 "ANTHROPIC_API_KEY tanimli degil. https://console.anthropic.com "
                 "adresinden anahtar alip .env dosyasina ekle."
             )
-        from langchain_anthropic import ChatAnthropic
+        try:
+            from langchain_anthropic import ChatAnthropic
+        except ImportError as hata:   # istege bagli bagimlilik
+            raise ConfigError(
+                "LLM_PROVIDER=anthropic secildi ama langchain-anthropic kurulu "
+                "degil. `pip install langchain-anthropic` calistir ya da "
+                "LLM_PROVIDER=google kullan."
+            ) from hata
 
         return ChatAnthropic(model=model, temperature=temperature, max_tokens=4096)
 

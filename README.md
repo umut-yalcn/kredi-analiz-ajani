@@ -222,7 +222,9 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS / Linux
 
-pip install -r requirements.txt
+pip install -r requirements.txt        # gevsek surumler
+# ya da testlerin gectigi birebir ortam icin:
+pip install -r requirements-lock.txt
 ```
 
 API anahtarı — [Google AI Studio](https://aistudio.google.com/apikey) ücretsiz

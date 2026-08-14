@@ -1,0 +1,21 @@
+# Dogrulanmis surumler - 232 testin gectigi ortamin birebir kopyasi.
+#
+# requirements.txt gevsek (>=) tutuluyor ki farkli Python surumlerinde de
+# kurulabilsin. Ama yarisma jurisi bu depoyu haftalar sonra klonlayacak ve
+# langgraph/chromadb gibi hizli gelisen paketlerin kirici bir surumu projeyi
+# calismaz hale getirebilir. Tekrarlanabilir kurulum icin:
+#
+#     pip install -r requirements-lock.txt
+#
+langgraph==1.2.10
+langchain-core==1.5.3
+langchain-google-genai==4.3.2
+langchain-anthropic>=0.3.0   # istege bagli: yalnizca LLM_PROVIDER=anthropic icin
+chromadb==1.5.9
+pandas==3.0.5
+numpy==2.4.6
+pydantic==2.13.4
+python-dotenv==1.2.2
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+pytest==9.1.1
