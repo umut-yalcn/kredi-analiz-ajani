@@ -244,8 +244,8 @@ analizleri, reddedilen istekleri ve denetim kaydını sırayla gösterir.
 ## Kurulum
 
 ```bash
-git clone https://github.com/umutyalcin-pen/agentic-aiproject
-cd agentic-aiproject
+git clone https://github.com/umutyalcin-pen/kredi-analiz-ajani
+cd kredi-analiz-ajani
 
 python -m venv .venv
 .venv\Scripts\activate          # Windows
