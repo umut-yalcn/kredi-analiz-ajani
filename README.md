@@ -70,16 +70,8 @@ doğrular. PII kolon talebi hata döner — ajan bunu görür ve planını deği
 **3. k-anonimlik (k=20).** 20 satırdan az veriye dayanan hiçbir toplulaştırma
 döndürülmez.
 
-Koruma iki yönlü: hem seçilen kümenin hem de **tümleyeninin** en az k kişi
-olması gerekiyor. Tek yönlü olsaydı, veri setinin neredeyse tamamını seçen bir
-sorgu `N·genel_ortalama − n·ortalama` ile dışarıda kalan tek kişinin değerini
-verirdi — bağımsız bir denetim bunu ölçtü (çıkarılan 410.899,98 / gerçek
-410.900,00, tek sorgu, guard'dan tek ret almadan). Açık kapatıldı ve testle
-kilitlendi.
-
 Tek bir sorgunun eşiği geçmesi yetmiyor — bunu bağımsız bir denetimde öğrendik.
 İki *ayrı* sorgu da eşiği geçebilir ama aralarındaki fark tek kişi olabilir:
-
 
 ```
 kredi_skoru <  1893  →  4996 satır, ortalama X
@@ -91,11 +83,25 @@ kişinin gelirini **kesin** olarak veriyordu. Ölçüldü: çıkarılan **31.499
 gerçek **31.500,0**. Her iki sorgu da guard'dan onay almıştı; denetim kaydında
 tek bir ret bile yoktu.
 
+> Not: yukarıdaki ölçüm, aşağıdaki **tümleyen** savunması eklenmeden önce
+> yapıldı. Bugün `kredi_skoru < 1893` sorgusu zaten reddediliyor — veri setinin
+> neredeyse tamamını seçtiği için. Fark alma senaryosunu bugün kurmak isteyen
+> `kredi_skoru < 1030` (60 satır) ve `<= 1030` (61 satır) çiftini kullanabilir;
+> ikinci sorgu `check_overlap` tarafından reddedilir.
+
 Bu yüzden guard artık aynı kolon üzerinde dönen sonuç kümesi boyutlarını
 hatırlıyor ve yeni sorgu öncekilerden **k'dan az farklıysa** reddediyor
 (`check_overlap`). Geçmiş **süreç genelinde** tutuluyor, istek başına değil —
 ilk düzeltme yalnızca istek içinde koruyordu ve saldırgan iki sorguyu iki ayrı
 isteğe bölerek aynı değeri yine çıkarabiliyordu. Bu da ölçüldü.
+
+**3b. Tümleyen kontrolü.** Seçilen küme büyük olsa bile *dışarıda kalanlar*
+tek kişi olabilir. Aynı yanıtta `ortalama`, `genel_ortalama` ve satır sayısı
+birlikte döndüğü için `N·genel_ortalama − n·ortalama` tümleyenin toplamını
+verir; tümleyen tek kişiyse o kişinin değeri kesin olarak çıkar. Bağımsız bir
+denetim bunu **tek sorguyla** yaptı: çıkarılan 410.899,98, gerçek 410.900,00 —
+ve guard denetim kaydında tek bir ret yoktu. Artık her iki tarafın da en az k
+kişi olması gerekiyor.
 
 Meşru analiz engellenmiyor: kademeli eşik taramaları, risk merdivenleri ve yaş
 grubu kırılımları test edildi, kaba taramalar bloklanmıyor.
