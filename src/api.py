@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from .agent import ask
 from .catalog import build_catalog
-from .guard import K_ANONYMITY_THRESHOLD
+from .guard import Guard, K_ANONYMITY_THRESHOLD
 from .schema import ANALYZABLE_COLUMNS, PII_COLUMNS
 from .tools import load_analysis_frame
 
@@ -114,4 +114,9 @@ def ask_endpoint(req: AskRequest) -> dict[str, Any]:
             detail="Veri seti bulunamadi. Once: python scripts/generate_data.py",
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Analiz basarisiz: {exc}")
+        # Istisna metni MASKELENEREK donuyor: _maskeli()'nin gerekcesi
+        # "disari cikan her sey" demek, hata yolu da buna dahil. Istisna
+        # metninde kullanicinin sorusundan gelen bir desen olabilir.
+        raise HTTPException(
+            status_code=500, detail=Guard().mask(f"Analiz basarisiz: {exc}")
+        )

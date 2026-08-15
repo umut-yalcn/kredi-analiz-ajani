@@ -159,7 +159,13 @@ def describe_column(column: str) -> str:
         # esige tabi degildi. Az gozlemli bir kolonda bu istatistikler
         # bireyleri yeniden kurmaya yeter. Degismez ("k'dan az satira dayanan
         # hicbir toplulastirma donmez") veriye degil KODA baglanmali.
-        get_guard().check_row_count("describe_column", int(gozlem.count()))
+        # GuardViolation SARMALANMALI: ToolNode bu istisnayi ToolMessage'a
+        # cevirmiyor, tum ajan kosumu duserdi. Dosyadaki diger guard cagrilari
+        # zaten sarili; k kontrolu buraya eklenirken atlanmisti.
+        try:
+            get_guard().check_row_count("describe_column", int(gozlem.count()))
+        except GuardViolation as exc:
+            return _ok({"hata": str(exc)})
         q = gozlem.quantile([0.05, 0.25, 0.5, 0.75, 0.95])
 
         # Uc degerler k-anonimlige tabidir. Bir kolonun en yuksek degeri tek bir
@@ -228,6 +234,11 @@ def describe_column(column: str) -> str:
         gizlenen = int(series.count()) - int(gorunen)
         kaba = (gizlenen // K_ANONYMITY_THRESHOLD) * K_ANONYMITY_THRESHOLD
         cikti["bastirilan_yaklasik_satir"] = f"{kaba}-{kaba + K_ANONYMITY_THRESHOLD}"
+        # Gorunen sayi da KABALASTIRILMALI: kesin kalirsa, N baska araclardan
+        # tam alinabildigi icin gizlenen sayi N - gorunen ile birebir geri
+        # cozuluyor ve yukaridaki kaba aralik hicbir sey gizlemiyordu.
+        kaba_gorunen = (int(gorunen) // K_ANONYMITY_THRESHOLD) * K_ANONYMITY_THRESHOLD
+        cikti["gorunen_satir_sayisi"] = f"{kaba_gorunen}+"
         cikti["not"] = (
             f"{len(suppressed)} grup k<{K_ANONYMITY_THRESHOLD} nedeniyle bastirildi. "
             f"Bastirilan satir sayisi yalnizca {K_ANONYMITY_THRESHOLD}'lik bir "
@@ -319,8 +330,20 @@ def group_aggregate(
             "metrik": metric,
             "yontem": how,
             "sonuc": values,
+            # BASTIRMA VARKEN grup sayilari kabalastiriliyor. Kesin sayilar
+            # verildiginde bastirilan grubun toplami aritmetikle geri
+            # cozuluyordu: N (correlation'dan) ve genel ortalama
+            # (describe_column'dan) herkese acik oldugu icin
+            #     N*genel - toplam(gorunen_n * gorunen_ortalama)
+            # gizlenen grubun toplamini veriyordu. Olculdu: tek kisilik bir
+            # grubun geliri 5.87 TL hatayla cikarildi, guard tek ret vermedi.
             "gozlemlenen_satir_sayisi": {
-                str(k): int(v) for k, v in sizes.items() if k not in suppressed
+                str(k): (
+                    int(v) if not suppressed
+                    else f"{(int(v) // K_ANONYMITY_THRESHOLD) * K_ANONYMITY_THRESHOLD}+"
+                )
+                for k, v in sizes.items()
+                if k not in suppressed
             },
             "bastirilan_grup_sayisi": len(suppressed),
         }
@@ -396,7 +419,15 @@ def segment_stats(column: str, operator: Literal["<", "<=", ">", ">=", "=="], va
     observed = subset[metric].dropna()
 
     try:
-        get_guard().check_row_count("segment_stats", len(observed), toplam=len(df))
+        # toplam=len(df) YANLISTI. Metrik NaN tasiyorsa (orn. temerrut yalnizca
+        # onaylanan basvurularda dolu) gozlemlenen populasyon daha kucuk ve
+        # genel_ortalama da o populasyondan (df[metric].mean()) geliyor.
+        # len(df) verilince tumleyen 1404 sanildi, gercekte 1 kisiydi ve guard
+        # tek ret vermeden gecti - olculdu. Iki tarafin AYNI N'i kullanmasi
+        # gerekiyor.
+        get_guard().check_row_count(
+            "segment_stats", len(observed), toplam=int(df[metric].count())
+        )
     except GuardViolation as exc:
         return _ok({"hata": str(exc)})
 
@@ -455,12 +486,13 @@ def correlation(column_a: str, column_b: str) -> str:
     # a DataFrame is ambiguous" ile coker. Zaten anlamsiz bir sorgu - erkenden
     # ve acikca reddediyoruz.
     if column_a == column_b:
-        return _ok(
-            {
-                "hata": f"'{column_a}' kolonunun kendisiyle korelasyonu tanimi geregi "
-                "1.0'dir; analitik bir bilgi tasimaz. Iki FARKLI sayisal kolon sec."
-            }
-        )
+        # Retler denetim kaydina YAZILIYOR. group_aggregate ve segment_stats
+        # ayni durumlarda reddet() cagiriyordu; correlation'in dort ret yolu
+        # atlanmisti ve "her karar kayda gecer" iddiasi burada tutmuyordu.
+        mesaj = (f"'{column_a}' kolonunun kendisiyle korelasyonu tanimi geregi "
+                 "1.0'dir; analitik bir bilgi tasimaz. Iki FARKLI sayisal kolon sec.")
+        get_guard().reddet("correlation", (column_a, column_b), mesaj)
+        return _ok({"hata": mesaj})
 
     df = load_analysis_frame()
 
@@ -471,12 +503,10 @@ def correlation(column_a: str, column_b: str) -> str:
     # titizlik gerekir.
     cift = df[[column_a, column_b]].dropna()
     if len(cift) < K_ANONYMITY_THRESHOLD:
-        return _ok(
-            {
-                "hata": f"Bu iki kolonun birlikte gozlemlendigi yalnizca {len(cift)} "
-                f"satir var. En az {K_ANONYMITY_THRESHOLD} gerekiyor."
-            }
-        )
+        mesaj = (f"Bu iki kolonun birlikte gozlemlendigi yalnizca {len(cift)} "
+                 f"satir var. En az {K_ANONYMITY_THRESHOLD} gerekiyor.")
+        get_guard().reddet("correlation", (column_a, column_b), mesaj)
+        return _ok({"hata": mesaj})
 
     r = float(cift[column_a].corr(cift[column_b]))
     if abs(r) < 0.1:
@@ -494,10 +524,12 @@ def correlation(column_a: str, column_b: str) -> str:
     # iliski var" diyebiliyordu ve sayi olmadigi icin dayanak kontrolu de
     # yakalayamiyordu.
     if not math.isfinite(r):
+        mesaj = "Kolonlardan birinin varyansi sifir; Pearson r tanimsiz."
+        get_guard().reddet("correlation", (column_a, column_b), mesaj)
         return _ok(
             {
                 "kolonlar": [column_a, column_b],
-                "hata": "Kolonlardan birinin varyansi sifir; Pearson r tanimsiz.",
+                "hata": mesaj,
                 "kullanilan_satir_sayisi": len(cift),
             }
         )

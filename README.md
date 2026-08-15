@@ -211,7 +211,7 @@ döner. Sistemin ne yaptığı ve neyi neden reddettiği izlenebilir.
 Koruma katmanını doğrulamak için **API anahtarı gerekmez.** İki yol var:
 
 ```bash
-pytest tests/ -q              # 128 passed
+pytest tests/ -q              # 134 passed
 python scripts/demo_guard.py  # korumaları canlı gösterir
 ```
 

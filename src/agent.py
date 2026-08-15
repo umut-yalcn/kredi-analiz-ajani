@@ -257,6 +257,15 @@ DESTEKSIZ_CEVAP_UYARISI = (
     "Asagidaki metin veriye dayanmiyor; icindeki sayilara guvenilmemelidir."
 )
 
+#: Uyari IKI farkli kosulla tetikleniyor ve tek metin ikisini de anlatamiyordu:
+#: "hicbir arac basarili olmadi" derken denetim kaydi "2 basarili arac ciktisi"
+#: yaziyordu. Kullaniciya yanlis sebep sunmak uyariya olan guveni asindirir.
+DAYANAKSIZ_SAYI_UYARISI = (
+    "[DAYANAKSIZ CEVAP] Cevaptaki sayilarin hicbiri arac ciktilariyla "
+    "eslesmiyor. Arac cagrilari yapilmis olsa da asagidaki sayilar onlara "
+    "dayanmiyor; guvenilmemelidir."
+)
+
 _SAYI_DESENI = re.compile(r"\d")
 
 
@@ -306,7 +315,12 @@ def _sayilari_cikar(metin: str) -> list[str]:
         if "," in t and "." in t:
             t = t.replace(".", "").replace(",", ".") if t.rindex(",") > t.rindex(".")                 else t.replace(",", "")
         elif "," in t:
-            t = t.replace(",", ".") if len(t.split(",")[-1]) != 3 else t.replace(",", "")
+            # Virgul TURKCE'DE HER ZAMAN ondalik ayracidir; sistem prompt'u
+            # cevabi Turkce zorunlu kiliyor. Onceki kural virgulden sonra tam
+            # 3 hane varsa binlik ayraci sayiyordu ve iki yonlu bozuktu:
+            # "-0,286" -> -286 okunup DOGRU cevap "uydurma" damgalaniyor,
+            # "1,403" -> 1403 okunup UYDURMA sayi onaylaniyordu.
+            t = t.replace(",", ".")
         try:
             d = float(t)
         except ValueError:
@@ -536,6 +550,16 @@ def ask(question: str) -> dict[str, Any]:
     final: AIMessage = result["messages"][-1]
     answer = guard.mask(_extract_text(final.content))
 
+    # Adim siniri, son AIMessage arac cagrisi tasirken de devreye girebiliyor;
+    # o mesajin metni BOS oluyordu. Sonuc: API 200 + bos "cevap" +
+    # dayanaksiz_cevap=false. Tuketici hicbir seyin ters gittigini anlamiyordu.
+    adim_siniri_asildi = not answer.strip()
+    if adim_siniri_asildi:
+        answer = (
+            "Adim sinirina ulasildi ve sonuc uretilemedi. Soruyu daraltip "
+            "tekrar dene."
+        )
+
     tool_calls = [
         {"arac": tc["name"], "girdi": _maskeli(tc["args"], guard)}
         for msg in result["messages"]
@@ -564,7 +588,11 @@ def ask(question: str) -> dict[str, Any]:
     cevap_sayilari = _sayilari_cikar(answer)
     hicbiri_dayanakli_degil = bool(cevap_sayilari) and len(dogrulanmayan) == len(cevap_sayilari)
 
-    dayanaksiz = (basarili == 0 and _veri_iddiasi_mi(answer)) or hicbiri_dayanakli_degil
+    dayanaksiz = (
+        adim_siniri_asildi
+        or (basarili == 0 and _veri_iddiasi_mi(answer))
+        or hicbiri_dayanakli_degil
+    )
     if dayanaksiz:
         guard.note(
             "cevap_dayanagi",
@@ -572,7 +600,11 @@ def ask(question: str) -> dict[str, Any]:
             f"Dayanaksiz cevap: {basarili} basarili arac ciktisi, "
             f"{len(dogrulanmayan)} dogrulanmayan sayi",
         )
-        answer = f"{DESTEKSIZ_CEVAP_UYARISI}\n\n{answer}"
+        uyari = (
+            DAYANAKSIZ_SAYI_UYARISI if hicbiri_dayanakli_degil
+            else DESTEKSIZ_CEVAP_UYARISI
+        )
+        answer = f"{uyari}\n\n{answer}"
     elif dogrulanmayan:
         # Kismi uydurma: bazi sayilar dayanakli, bazilari degil. Engellemiyoruz
         # (turetilmis degerler dogal olarak eslesmeyebilir) ama raporluyoruz.

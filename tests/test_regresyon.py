@@ -831,3 +831,96 @@ class TestOpus5Denetimi:
         assert r["bastirilan_grup_sayisi"] == 1
         assert "satir_sayisi" not in r          # kesin toplam hala gizli
         assert r["bastirilan_yaklasik_satir"] == "0-20"
+
+
+class TestOpus5IkinciTur:
+    """Altinci bagimsiz denetim: onceki turun duzeltmelerindeki BOSLUKLAR."""
+
+    def test_tumleyen_kontrolu_nan_metrikte_de_calisir(self):
+        """Ilk duzeltme toplam=len(df) geciyordu.
+
+        Metrik NaN tasidiginda (temerrut yalnizca onaylanan basvurularda dolu)
+        gozlemlenen populasyon daha kucuk ve genel_ortalama da o populasyondan
+        geliyor. len(df) verilince tumleyen 1404 sanildi, GERCEKTE 1 kisiydi
+        ve guard tek ret vermeden gecti - olculdu.
+        """
+        gecmisi_temizle()
+        set_guard(Guard())
+        r = _c(segment_stats, column="kredi_skoru", operator=">", value=1103.0,
+               metric="temerrut")
+        assert "hata" in r, "gozlemlenen tumleyeni tek kisi olan sorgu REDDEDILMELI"
+
+    def test_describe_column_k_ihlalinde_cokmez(self):
+        """GuardViolation ToolNode tarafindan ToolMessage'a cevrilmiyor; tum
+        ajan kosumu duserdi. k kontrolu eklenirken try/except atlanmisti."""
+        import src.tools as T
+
+        df = load_analysis_frame().copy().head(10)
+        orijinal = T.load_analysis_frame
+        T.load_analysis_frame = lambda: df
+        try:
+            set_guard(Guard())
+            r = _c(describe_column, column="aylik_gelir")   # istisna FIRLATMAMALI
+        finally:
+            T.load_analysis_frame = orijinal
+        assert "hata" in r and "satir" in r["hata"]
+
+    def test_turkce_virgul_her_zaman_ondalik(self):
+        """Virgulden sonra 3 hane varsa binlik ayraci sayan kural iki yonlu
+        bozuktu: dogru cevap uydurma damgalaniyor, uydurma sayi onaylaniyordu."""
+        from src.agent import _sayilari_cikar
+
+        assert _sayilari_cikar("-0,286") == ["-0.286"]
+        assert _sayilari_cikar("1,403") == ["1.403"]
+        assert _sayilari_cikar("1.234,56") == ["1234.56"]
+        # dogru yuvarlanmis cevap damgalanmamali
+        assert _dogrulanmayan_sayilar("Korelasyon -0,286.", ['{"r": -0.2862}']) == []
+        # arac ciktisinda 1403 var ama cevap 1,403 (yani 1.403) - uydurma
+        assert _dogrulanmayan_sayilar("Toplam 1,403 adet.", ['{"dusen": 1403}']) == ["1.403"]
+
+    def test_bastirma_varken_grup_sayilari_kabalasir(self):
+        """Kesin grup sayilari verildiginde bastirilan grubun toplami
+        aritmetikle geri cozuluyordu (olculdu: 5.87 TL hatayla tek kisinin
+        geliri). Bastirma YOKKEN kesin sayi korunuyor."""
+        import src.tools as T
+
+        df = load_analysis_frame().copy()
+        df.loc[df.index[0], "il"] = "NADIR"
+        orijinal = T.load_analysis_frame
+        T.load_analysis_frame = lambda: df
+        try:
+            set_guard(Guard())
+            bastirmali = _c(group_aggregate, group_by="il", metric="aylik_gelir", how="mean")
+        finally:
+            T.load_analysis_frame = orijinal
+        assert bastirmali["bastirilan_grup_sayisi"] == 1
+        assert all(str(v).endswith("+") for v in bastirmali["gozlemlenen_satir_sayisi"].values())
+
+        set_guard(Guard())
+        temiz = _c(group_aggregate, group_by="meslek_grubu", metric="aylik_gelir", how="mean")
+        assert temiz["bastirilan_grup_sayisi"] == 0
+        assert all(isinstance(v, int) for v in temiz["gozlemlenen_satir_sayisi"].values())
+
+    def test_gorunen_satir_sayisi_da_kabalasir(self):
+        """Kaba aralik tek basina hicbir sey gizlemiyordu: N baska araclardan
+        tam alinabildigi icin gizlenen sayi N - gorunen ile birebir cozuluyordu."""
+        import src.tools as T
+
+        df = load_analysis_frame().copy()
+        df.loc[df.index[:5], "il"] = "NADIR"
+        orijinal = T.load_analysis_frame
+        T.load_analysis_frame = lambda: df
+        try:
+            set_guard(Guard())
+            r = _c(describe_column, column="il")
+        finally:
+            T.load_analysis_frame = orijinal
+        assert str(r["gorunen_satir_sayisi"]).endswith("+")
+
+    def test_correlation_retleri_denetim_kaydina_girer(self):
+        """group_aggregate ve segment_stats ayni durumlarda reddet() cagiriyordu;
+        correlation'in ret yollari atlanmisti."""
+        g = Guard()
+        set_guard(g)
+        _c(correlation, column_a="aylik_gelir", column_b="aylik_gelir")
+        assert any(not e["allowed"] and e["action"] == "correlation" for e in g.audit_trail())
