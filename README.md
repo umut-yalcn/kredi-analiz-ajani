@@ -1,5 +1,7 @@
 # Agentic Data Analytics — Kredi Verisinde Güvenli Ajan Mimarisi
 
+[![testler](https://github.com/umut-yalcn/kredi-analiz-ajani/actions/workflows/testler.yml/badge.svg)](https://github.com/umut-yalcn/kredi-analiz-ajani/actions/workflows/testler.yml)
+
 Kredi başvuru verisi üzerinde doğal dilde soru sorulabilen bir analiz ajanı.
 Ajan hangi analizi yapacağına çalışma anında kendisi karar verir; **kişisel veriye
 erişimi ise mimari olarak imkânsızdır.**
@@ -244,7 +246,7 @@ analizleri, reddedilen istekleri ve denetim kaydını sırayla gösterir.
 ## Kurulum
 
 ```bash
-git clone https://github.com/umutyalcin-pen/kredi-analiz-ajani
+git clone https://github.com/umut-yalcn/kredi-analiz-ajani
 cd kredi-analiz-ajani
 
 python -m venv .venv
@@ -444,4 +446,4 @@ girmiyor.
 
 ## Geliştirici
 
-**Umut Yalçın** — [github.com/umutyalcin-pen](https://github.com/umutyalcin-pen)
+**Umut Yalçın** — [github.com/umut-yalcn](https://github.com/umut-yalcn)
