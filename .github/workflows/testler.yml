@@ -23,4 +23,6 @@ jobs:
       # Testler API anahtari GEREKTIRMEZ: veri conftest tarafindan uretiliyor,
       # model cagrilari sahte modelle yapiliyor. CI'da gizli anahtar yok.
       - name: Testleri calistir
-        run: pytest tests/ -q
+        # `python -m pytest` (duz `pytest` degil): calisilan dizini arama
+        # yoluna ekler, yoksa `import src` CI'da ModuleNotFoundError verir.
+        run: python -m pytest tests/ -q
