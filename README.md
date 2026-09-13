@@ -1,6 +1,7 @@
 # Agentic Data Analytics — Kredi Verisinde Güvenli Ajan Mimarisi
 
 [![testler](https://github.com/umut-yalcn/kredi-analiz-ajani/actions/workflows/testler.yml/badge.svg)](https://github.com/umut-yalcn/kredi-analiz-ajani/actions/workflows/testler.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Kredi başvuru verisi üzerinde doğal dilde soru sorulabilen bir analiz ajanı.
 Ajan hangi analizi yapacağına çalışma anında kendisi karar verir; **kişisel veriye
@@ -443,6 +444,10 @@ girmiyor.
 - [ ] Denetim kaydının kalıcı depoya yazılması
 
 ---
+
+## Lisans
+
+MIT — bkz. [LICENSE](LICENSE).
 
 ## Geliştirici
 
